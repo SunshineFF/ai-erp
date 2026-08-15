@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+uploads/
+apps/api/uploads/
+apps/api/prisma/dev.db
+outputs/**/.build/node_modules/

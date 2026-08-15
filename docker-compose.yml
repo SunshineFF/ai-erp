@@ -1,0 +1,32 @@
+services:
+  erp-infra:
+    image: local/erp-postgres-redis:16-7
+    build:
+      context: ./docker/shared-infra
+      dockerfile: Dockerfile
+    container_name: erp-shared-infra
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rubber_erp}
+      POSTGRES_USER: ${POSTGRES_USER:-erp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-erp_dev_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_dev_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - erp_postgres_data:/var/lib/postgresql/data
+      - erp_redis_data:/data/redis
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && redis-cli -a $${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  erp_postgres_data:
+    name: erp_shared_postgres_data
+  erp_redis_data:
+    name: erp_shared_redis_data

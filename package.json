@@ -1,0 +1,42 @@
+{
+  "name": "rubber-erp",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace=@rubber-erp/api",
+    "dev:web": "npm run dev --workspace=@rubber-erp/web",
+    "build": "npm run build --workspaces",
+    "test": "npm test --workspace=@rubber-erp/api",
+    "test:smoke": "npm run test:smoke --workspace=@rubber-erp/api",
+    "db:generate": "npm run prisma:generate --workspace=@rubber-erp/api",
+    "db:push": "npm run prisma:push --workspace=@rubber-erp/api",
+    "db:migrate": "npm run prisma:migrate --workspace=@rubber-erp/api",
+    "db:seed": "npm run prisma:seed --workspace=@rubber-erp/api"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.23.11",
+    "typescript": "^5.4.5",
+    "vite": "^5.4.10"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.6",
+    "multer": "^2.2.0",
+    "qs": "^6.15.3"
+  },
+  "overrides": {
+    "@nestjs/platform-express": {
+      "body-parser": "1.20.6",
+      "multer": "2.2.0"
+    },
+    "express": {
+      "body-parser": "1.20.6",
+      "qs": "6.15.3"
+    }
+  }
+}

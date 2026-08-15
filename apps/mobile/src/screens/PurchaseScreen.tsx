@@ -1,0 +1,17 @@
+import React, { useEffect, useMemo, useState } from "react";
+import Toast from "@ant-design/react-native/es/toast";
+import { View } from "react-native";
+import { api } from "../api";
+import { AddLineButton, Feedback, OrderLineCard, SectionHeader, SubmitButton } from "../components/BusinessComponents";
+import { DateField, Field, FormRow, SelectField } from "../components/FormControls";
+import { appStyles } from "../theme";
+import { blankOrderLine, OrderLineDraft, ReferenceData, today } from "../types";
+
+export function PurchaseScreen({ reference }: { reference: ReferenceData }) {
+  const [suppliers, setSuppliers] = useState<any[]>([]); const [supplierId, setSupplierId] = useState(""); const [orderDate, setOrderDate] = useState(today()); const [expectedDate, setExpectedDate] = useState(""); const [remark, setRemark] = useState(""); const [lines, setLines] = useState<OrderLineDraft[]>([blankOrderLine()]); const [saving, setSaving] = useState(false); const [notice, setNotice] = useState("");
+  useEffect(() => { void api<any[]>("/suppliers").then(setSuppliers).catch((reason) => setNotice(reason.message)); }, []);
+  const materials = useMemo(() => reference.materials.filter((item) => item.isActive && (item.purchasable || item.materialType !== "FINISHED_GOOD")), [reference.materials]);
+  const update = (key: number, patch: Partial<OrderLineDraft>) => setLines((current) => current.map((line) => line.key === key ? { ...line, ...patch } : line));
+  async function submit() { setSaving(true); setNotice(""); try { const partner = suppliers.find((item) => item.id === supplierId); const order = await api<any>("/purchase-orders", { method: "POST", body: JSON.stringify({ supplierId, orderDate, expectedDate: expectedDate || undefined, currencyCode: partner?.currencyCode ?? "CNY", exchangeRate: 1, priceIncludesTax: true, remark, lines: lines.map(({ materialId, quantity, unitId, unitPrice }) => ({ materialId, quantity: Number(quantity), unitId, unitPrice: Number(unitPrice) })) }) }); const message = `已保存 ${order.documentNo}`; setNotice(message); Toast.success(message); setLines([blankOrderLine()]); setRemark(""); } catch (reason) { setNotice(reason instanceof Error ? reason.message : "保存失败"); } finally { setSaving(false); } }
+  return <View style={appStyles.stack}><SectionHeader index="01" title="采购信息" /><SelectField label="供应商" value={supplierId} onChange={setSupplierId} options={suppliers.filter((item) => item.isActive).map((item) => [item.id, item.name])} /><FormRow><DateField label="下单日期" value={orderDate} onChange={setOrderDate} /><DateField label="预计到货" value={expectedDate} onChange={setExpectedDate} /></FormRow><SectionHeader index="02" title="采购物料" action={<AddLineButton onPress={() => setLines((current) => [...current, blankOrderLine()])} />} />{lines.map((line, index) => <OrderLineCard key={line.key} index={index} line={line} materials={materials} units={reference.units} removable={lines.length > 1} onChange={(patch) => update(line.key, patch)} onRemove={() => setLines((current) => current.filter((item) => item.key !== line.key))} />)}<Field label="备注" value={remark} onChange={setRemark} /><Feedback message={notice} success={notice.startsWith("已保存")} /><SubmitButton loading={saving} disabled={!supplierId || lines.some((line) => !line.materialId || Number(line.quantity) <= 0)} onPress={() => void submit()}>保存采购单</SubmitButton></View>;
+}
