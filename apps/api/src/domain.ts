@@ -19,3 +19,9 @@ export function calculateMovingAverage(oldQty: number, oldValue: number, quantit
   if (newQty < -0.000001 || newValue < -0.01) throw new BadRequestException("库存成本余额不足，无法过账");
   return { amountDelta, newQty, newValue, newAverage: newQty > 0 ? newValue / newQty : 0 };
 }
+
+export function calculateShipmentAmount(orderQuantity: number, grossAmount: number, shippedQuantity: number, previousAmount: number, currentQuantity: number) {
+  if (![orderQuantity, grossAmount, shippedQuantity, previousAmount, currentQuantity].every(Number.isFinite) || orderQuantity <= 0 || currentQuantity <= 0 || shippedQuantity < 0 || shippedQuantity + currentQuantity > orderQuantity + 0.000001) throw new BadRequestException("出库数量超过销售单剩余数量");
+  const remaining = orderQuantity - shippedQuantity;
+  return Math.abs(currentQuantity - remaining) < 0.000001 ? roundMoney(grossAmount - previousAmount) : roundMoney(grossAmount * currentQuantity / orderQuantity);
+}

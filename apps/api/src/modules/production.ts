@@ -1,8 +1,10 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, Injectable, Param, Patch, Post, Req } from "@nestjs/common";
-import { InventoryTransactionType, Prisma, ProductionType } from "@prisma/client";
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Injectable, Param, Patch, Post, Query, Req } from "@nestjs/common";
+import { InventoryTransactionType, Prisma, ProductionType, SalesOrderStatus } from "@prisma/client";
 import { PrismaService } from "../prisma.service";
 import { Permissions } from "../security";
 import { InventoryPostingService } from "./posting";
+import { PaginationQuery, pageResult, parsePagination, createdAtFilter } from "../pagination";
+import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 
 type ProductionOutputInput = { materialId: string; plannedQty: number; unitId: string };
 type CreateProductionBody = {
@@ -14,17 +16,19 @@ type CreateProductionBody = {
   productionType: ProductionType;
   remark?: string;
   lines?: ProductionOutputInput[];
+  salesOrderIds?: string[];
 };
 type IssueLine = { productionMaterialId: string; batchId: string; locationId: string; quantity: number; differenceReason?: string };
 type CompletionLine = { outputLineId: string; quantity: number; batchNo: string; productionDate: string; expiryDate: string; scrapQty?: number };
+
+// 可关联生产单的销售单状态：新建/已确认/生产中/备妥/部分出库均可；仅已出库（已生产结束）与已取消不可关联。
+const LINKABLE_SALES_STATUSES: SalesOrderStatus[] = ["DRAFT", "CONFIRMED", "IN_PRODUCTION", "READY", "PARTIALLY_SHIPPED"];
 
 @Injectable()
 export class ProductionService {
   constructor(private readonly prisma: PrismaService, private readonly posting: InventoryPostingService) {}
 
-  list() {
-    return this.prisma.productionOrder.findMany({ include: { materials: true, outputLines: true }, orderBy: { createdAt: "desc" } });
-  }
+  async list(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const salesOrderIds = query.partnerId ? (await this.prisma.salesOrder.findMany({ where: { customerId: query.partnerId }, select: { id: true } })).map((item) => item.id) : undefined; const where: any = { ...(createdAtFilter(query) ? { createdAt: createdAtFilter(query) } : {}), ...(query.status ? { status: query.status } : {}), ...(salesOrderIds ? { sourceSalesOrderId: { in: salesOrderIds } } : {}) }; const [items, total] = await Promise.all([this.prisma.productionOrder.findMany({ where, include: { materials: true, outputLines: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true, customerId: true } } } } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.productionOrder.count({ where })]); return pageResult(items, total, page, pageSize); }
 
   async create(body: CreateProductionBody) {
     const outputLines = body.lines?.length
@@ -33,27 +37,67 @@ export class ProductionService {
         ? [{ materialId: body.outputMaterialId, plannedQty: body.plannedQty, unitId: body.unitId }]
         : [];
     if (!outputLines.length || outputLines.some((line) => line.plannedQty <= 0)) throw new BadRequestException("生产订单至少需要一行有效产出物料");
+    const parent = await (this.prisma as any).material.findFirst({ where: { id: { in: outputLines.map((line) => line.materialId) }, parentMaterialId: null, variantEnabled: true }, select: { name: true } });
+    if (parent) throw new BadRequestException(`多属性产品“${parent.name}”必须选择具体 SKU`);
     const company = await this.prisma.company.findFirstOrThrow();
     const warehouse = await this.prisma.warehouse.findFirstOrThrow();
+    // 关联销售单：明细可自由调整（不强绑定），但每个产出物料的计划数量不得低于关联销售单明细的未完成数量。
+    const salesOrderIds = [...new Set((body.salesOrderIds ?? []).map((id) => id?.trim()).filter(Boolean))];
+    const linkedSalesOrders = salesOrderIds.length
+      ? await this.prisma.salesOrder.findMany({ where: { id: { in: salesOrderIds }, status: { in: LINKABLE_SALES_STATUSES } }, include: { lines: true } })
+      : [];
+    if (linkedSalesOrders.length !== salesOrderIds.length) throw new BadRequestException("存在无效或已完结（已出库/已取消）的销售订单");
     const planned: { line: ProductionOutputInput; bom: any }[] = [];
     for (const line of outputLines) {
-      const bom = await this.prisma.bom.findFirst({ where: { companyId: company.id, outputMaterialId: line.materialId, status: "EFFECTIVE" }, include: { items: true }, orderBy: { effectiveFrom: "desc" } });
+      let bom = await this.prisma.bom.findFirst({ where: { companyId: company.id, outputMaterialId: line.materialId, status: "EFFECTIVE" }, include: { items: true }, orderBy: { effectiveFrom: "desc" } });
+      if (!bom) {
+        // 产出物料为 SKU 且无专属 BOM 时，回退使用其产品族（多属性父物料）的生效 BOM。
+        const sku = await this.prisma.material.findUnique({ where: { id: line.materialId }, select: { parentMaterialId: true } });
+        if (sku?.parentMaterialId) bom = await this.prisma.bom.findFirst({ where: { companyId: company.id, outputMaterialId: sku.parentMaterialId, status: "EFFECTIVE" }, include: { items: true }, orderBy: { effectiveFrom: "desc" } });
+      }
       if (!bom) throw new BadRequestException(`物料 ${line.materialId} 没有生效 BOM`);
       planned.push({ line, bom });
     }
+    if (linkedSalesOrders.length) {
+      const requiredByMaterial = new Map<string, number>();
+      for (const order of linkedSalesOrders) for (const line of order.lines) requiredByMaterial.set(line.materialId, (requiredByMaterial.get(line.materialId) ?? 0) + Number(line.quantity) - Number(line.shippedQty));
+      for (const [materialId, requiredQty] of requiredByMaterial) {
+        if (requiredQty <= 0) continue;
+        const plannedQty = outputLines.filter((line) => line.materialId === materialId).reduce((sum, line) => sum + line.plannedQty, 0);
+        if (plannedQty + 0.000001 < requiredQty) throw new BadRequestException(`关联销售单要求物料 ${materialId} 未完成数量为 ${requiredQty}，生产计划数量 ${plannedQty} 不足`);
+      }
+    }
     const primary = planned[0];
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.productionOrder.create({ data: { documentNo: `MO-${Date.now()}`, companyId: company.id, warehouseId: warehouse.id, productionType: body.productionType, outputMaterialId: primary.line.materialId, bomId: primary.bom.id, bomVersionSnapshot: primary.bom.versionNo, plannedQty: primary.line.plannedQty, unitId: primary.line.unitId, plannedDate: new Date(body.plannedDate), targetLocationId: body.targetLocationId, remark: body.remark } });
+      const order = await tx.productionOrder.create({ data: { documentNo: `MO-${Date.now()}`, companyId: company.id, warehouseId: warehouse.id, productionType: body.productionType, outputMaterialId: primary.line.materialId, bomId: primary.bom.id, bomVersionSnapshot: primary.bom.versionNo, plannedQty: primary.line.plannedQty, unitId: primary.line.unitId, plannedDate: new Date(body.plannedDate), targetLocationId: body.targetLocationId, remark: body.remark, ...(linkedSalesOrders.length ? { sourceSalesOrderId: linkedSalesOrders[0].id, sourceSalesOrderLineId: linkedSalesOrders[0].lines[0]?.id } : {}) } });
+      if (linkedSalesOrders.length) await tx.productionOrderLink.createMany({ data: linkedSalesOrders.map((salesOrder) => ({ productionOrderId: order.id, salesOrderId: salesOrder.id })), skipDuplicates: true });
       for (const [lineIndex, item] of planned.entries()) {
         const outputLine = await tx.productionOutputLine.create({ data: { productionOrderId: order.id, lineNo: lineIndex + 1, materialId: item.line.materialId, bomId: item.bom.id, bomVersionSnapshot: item.bom.versionNo, plannedQty: item.line.plannedQty, unitId: item.line.unitId } });
         const ratio = item.line.plannedQty / Number(item.bom.standardOutputQty);
         await tx.productionMaterial.createMany({ data: item.bom.items.map((bomItem: any, materialIndex: number) => ({ productionOrderId: order.id, productionOutputLineId: outputLine.id, lineNo: lineIndex * 1000 + materialIndex + 1, materialId: bomItem.inputMaterialId, requiredQty: Number(bomItem.requiredQty) * ratio, unitId: bomItem.unitId, lossRate: bomItem.lossRate })) });
       }
-      return tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true } });
+      return tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true } } } } } });
     });
   }
 
   release(id: string) { return this.prisma.productionOrder.update({ where: { id, status: "DRAFT" }, data: { status: "RELEASED" } }); }
+
+  // 供生产单创建表单：按所选销售单合并未完成明细（quantity - shippedQty），作为生产明细初始值。
+  async salesOrderRequirements(salesOrderIds: string[]) {
+    const ids = [...new Set((salesOrderIds ?? []).map((id) => id?.trim()).filter(Boolean))];
+    if (!ids.length) return { orders: [], lines: [] };
+    const orders = await this.prisma.salesOrder.findMany({ where: { id: { in: ids }, status: { in: LINKABLE_SALES_STATUSES } }, include: { lines: true, customer: { select: { name: true } } } });
+    if (orders.length !== ids.length) throw new BadRequestException("存在无效或已完结（已出库/已取消）的销售订单");
+    const merged = new Map<string, { materialId: string; quantity: number; unitId: string; salesOrderIds: string[] }>();
+    for (const order of orders) for (const line of order.lines) {
+      const remaining = Number(line.quantity) - Number(line.shippedQty);
+      if (remaining <= 0) continue;
+      const current = merged.get(line.materialId);
+      if (current) { current.quantity += remaining; current.salesOrderIds.push(order.id); }
+      else merged.set(line.materialId, { materialId: line.materialId, quantity: remaining, unitId: line.unitId, salesOrderIds: [order.id] });
+    }
+    return { orders: orders.map((order) => ({ id: order.id, documentNo: order.documentNo, customerName: order.customer?.name ?? "" })), lines: [...merged.values()] };
+  }
 
   async issue(id: string, lines: IssueLine[], key: string | undefined, actorUserId?: string) {
     if (!key || !lines?.length) throw new BadRequestException("领料必须提供幂等键和批次明细");
@@ -125,8 +169,13 @@ export class ProductionService {
       const completedQty = refreshed.reduce((sum, item) => sum + Number(item.completedQty), 0);
       const scrapQty = refreshed.reduce((sum, item) => sum + Number(item.scrapQty), 0);
       await tx.productionOrder.update({ where: { id: order.id }, data: { completedQty, scrapQty, status: isComplete ? "COMPLETED" : "IN_PROGRESS" } });
-      if (isComplete && order.sourceSalesOrderId) await tx.salesOrder.update({ where: { id: order.sourceSalesOrderId }, data: { status: "READY" } });
-      return tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true } });
+      // 完工后回写关联销售单状态：单关联沿用 sourceSalesOrderId，多关联遍历 ProductionOrderLink。
+      if (isComplete) {
+        const links = await tx.productionOrderLink.findMany({ where: { productionOrderId: order.id }, select: { salesOrderId: true } });
+        const linkedIds = links.length ? links.map((link) => link.salesOrderId) : order.sourceSalesOrderId ? [order.sourceSalesOrderId] : [];
+        for (const salesOrderId of linkedIds) await tx.salesOrder.updateMany({ where: { id: salesOrderId, status: { in: ["IN_PRODUCTION", "CONFIRMED"] } }, data: { status: "READY" } });
+      }
+      return tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true } } } } } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
@@ -149,13 +198,14 @@ export class ProductionService {
     });
   }
 
-  async remove(id: string) { const order = await this.prisma.productionOrder.findFirstOrThrow({ where: { id, status: "DRAFT" } }); return this.prisma.productionOrder.delete({ where: { id: order.id } }); }
+  async remove(id: string) { const order = ensureFound(await this.prisma.productionOrder.findUnique({ where: { id } }), "生产订单不存在"); const [transactions, audits] = await Promise.all([this.prisma.inventoryTransaction.count({ where: { sourceDocumentType: "PRODUCTION_ORDER", sourceDocumentId: id } }), this.prisma.auditLog.count({ where: { resourceType: "ProductionOrder", resourceId: id } })]); if (transactions || audits) deleteConflict(`生产订单“${order.documentNo}”存在过账或审计引用，无法删除`, [{ resource: "库存事务", count: transactions }, { resource: "审计记录", count: audits }].filter((x) => x.count)); await this.prisma.$transaction(async (tx) => { await tx.productionMaterial.deleteMany({ where: { productionOrderId: id } }); await tx.productionOutputLine.deleteMany({ where: { productionOrderId: id } }); await tx.productionOrder.delete({ where: { id } }); }); return deleted(id); }
 }
 
 @Controller("production-orders")
 export class ProductionController {
   constructor(private readonly service: ProductionService) {}
-  @Get() @Permissions("production.view") list() { return this.service.list(); }
+  @Get() @Permissions("production.view") list(@Query() query: PaginationQuery) { return this.service.list(query); }
+  @Post("sales-order-requirements") @Permissions("production.view") salesOrderRequirements(@Body() body: { salesOrderIds: string[] }) { return this.service.salesOrderRequirements(body.salesOrderIds); }
   @Post() @Permissions("production.manage") create(@Body() body: CreateProductionBody) { return this.service.create(body); }
   @Patch(":id/release") @Permissions("production.manage") release(@Param("id") id: string) { return this.service.release(id); }
   @Post(":id/issues") @Permissions("production.issue") issue(@Param("id") id: string, @Body() body: { lines: IssueLine[] }, @Headers("idempotency-key") key: string | undefined, @Req() req: any) { return this.service.issue(id, body.lines, key, req.user?.sub); }

@@ -1,0 +1,2 @@
+import type { Material } from "../../types";
+export function materialLabel(materials: Material[], id?: string) { const material = materials.find((item) => item.id === id); const variant = material?.variantValues?.map((value) => value.attributeValue?.name ?? value.attributeValue?.code).filter(Boolean).join(" · "); return material ? `${material.code} · ${material.name}${variant ? ` · ${variant}` : ""}` : "-"; }

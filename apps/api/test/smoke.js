@@ -35,9 +35,9 @@ async function main() {
     assert.ok(me.permissions.includes("system.manage"));
     const [dashboard, reports, rates, imports] = await Promise.all([call("/dashboard", { headers }), call("/reports/inventory", { headers }), call("/settings/exchange-rates", { headers }), call("/imports", { headers })]);
     assert.ok(dashboard.metrics);
-    assert.ok(Array.isArray(reports));
-    assert.ok(rates.some((rate) => rate.currencyCode === "USD"));
-    assert.ok(Array.isArray(imports));
+    assert.ok(Array.isArray(reports.items));
+    assert.ok(rates.items.some((rate) => rate.currencyCode === "USD"));
+    assert.ok(Array.isArray(imports.items));
     const form = new FormData();
     const sample = readFileSync(join(process.cwd(), "..", "..", "outputs", "一期数据导入样例", "一期数据导入样例.xlsx"));
     form.append("targetType", "AUTO");
@@ -51,7 +51,7 @@ async function main() {
     assert.equal(protectedFile.status, 200);
     assert.ok((await protectedFile.arrayBuffer()).byteLength > 1000);
     assert.equal((await fetch(`${base}/imports/${imported.id}/file`)).status, 401);
-    console.log(JSON.stringify({ login: login.user.username, permissionCount: me.permissions.length, dashboard: dashboard.metrics, inventoryReportRows: reports.length, importTasksBefore: imports.length, parsedRows: imported.items.length }));
+    console.log(JSON.stringify({ login: login.user.username, permissionCount: me.permissions.length, dashboard: dashboard.metrics, inventoryReportRows: reports.items.length, importTasksBefore: imports.items.length, parsedRows: imported.items.length }));
   } finally {
     await app.close();
     if (createdImport) {

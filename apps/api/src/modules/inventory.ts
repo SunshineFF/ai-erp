@@ -1,8 +1,10 @@
-import { BadRequestException, Body, Controller, Get, Headers, Injectable, Param, Patch, Post, Req } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Injectable, Param, Patch, Post, Query, Req } from "@nestjs/common";
 import { BatchStatus, InventoryDocumentType, InventoryTransactionType, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service";
 import { Permissions } from "../security";
 import { InventoryPostingService } from "./posting";
+import { PaginationQuery, pageResult, parsePagination } from "../pagination";
+import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 
 type ReceiptBody = { materialId: string; locationId: string; batchNo: string; supplierBatchNo?: string; supplierName?: string; quantity: number; unitId: string; unitCostCny: number; productionDate: string; expiryDate: string; remark?: string };
 type StockLine = { materialId: string; batchId: string; locationId: string; quantity: number; unitId: string };
@@ -14,11 +16,14 @@ type AdjustmentBody = StockLine & { reasonCode: string; remark?: string };
 export class InventoryService {
   constructor(private readonly prisma: PrismaService, private readonly posting: InventoryPostingService) {}
 
-  balances() { return this.prisma.inventoryBalance.findMany({ orderBy: { updatedAt: "desc" }, take: 500 }); }
-  batches() { return this.prisma.inventoryBatch.findMany({ orderBy: { expiryDate: "asc" }, take: 500 }); }
-  transactions() { return this.prisma.inventoryTransaction.findMany({ orderBy: { postedAt: "desc" }, take: 500 }); }
-  costs() { return this.prisma.materialCost.findMany({ orderBy: { updatedAt: "desc" } }); }
-  documents() { return this.prisma.inventoryDocument.findMany({ include: { lines: true }, orderBy: { createdAt: "desc" }, take: 200 }); }
+  async balances(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryBalance.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryBalance.count()]); return pageResult(items, total, page, pageSize); }
+  async batches(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryBatch.findMany({ orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryBatch.count()]); return pageResult(items, total, page, pageSize); }
+  async transactions(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryTransaction.findMany({ orderBy: [{ postedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryTransaction.count()]); return pageResult(items, total, page, pageSize); }
+  async costs(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.materialCost.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.materialCost.count()]); return pageResult(items, total, page, pageSize); }
+  async documents(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryDocument.findMany({ include: { lines: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryDocument.count()]); return pageResult(items, total, page, pageSize); }
+  async operationsBootstrap() { const [orders, sales, batches, balances, locations, materials] = await Promise.all([this.prisma.productionOrder.findMany({ where: { status: { in: ["RELEASED", "IN_PROGRESS"] } }, include: { materials: true, outputLines: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.salesOrder.findMany({ where: { status: { in: ["DRAFT", "CONFIRMED", "READY", "PARTIALLY_SHIPPED"] } }, include: { customer: true, lines: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.inventoryBatch.findMany({ orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.inventoryBalance.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }] }), this.prisma.location.findMany({ where: { isActive: true }, orderBy: { code: "asc" } }), this.prisma.material.findMany({ where: { isActive: true }, orderBy: { code: "asc" } })]); return { orders, sales, batches, balances, locations, materials }; }
+
+  async removeBatch(id: string) { const batch = ensureFound(await this.prisma.inventoryBatch.findUnique({ where: { id } }), "库存批次不存在"); const [transactions, balances, genealogy] = await Promise.all([this.prisma.inventoryTransaction.count({ where: { batchId: id } }), this.prisma.inventoryBalance.count({ where: { batchId: id } }), this.prisma.batchGenealogy.count({ where: { OR: [{ inputBatchId: id }, { outputBatchId: id }] } })]); if (transactions || balances || genealogy) deleteConflict(`批次“${batch.batchNo}”存在库存或追溯引用，无法删除`, [{ resource: "库存事务", count: transactions }, { resource: "库存余额", count: balances }, { resource: "批次追溯", count: genealogy }].filter((x) => x.count)); await this.prisma.inventoryBatch.delete({ where: { id } }); return deleted(id); }
 
   private async context() {
     const [company, warehouse] = await Promise.all([this.prisma.company.findFirstOrThrow(), this.prisma.warehouse.findFirstOrThrow()]);
@@ -122,11 +127,13 @@ export class InventoryService {
 @Controller("inventory")
 export class InventoryController {
   constructor(private readonly service: InventoryService) {}
-  @Get("balances") @Permissions("inventory.view") balances() { return this.service.balances(); }
-  @Get("batches") @Permissions("inventory.view") batches() { return this.service.batches(); }
-  @Get("transactions") @Permissions("inventory.view") transactions() { return this.service.transactions(); }
-  @Get("costs") @Permissions("inventory.view") costs() { return this.service.costs(); }
-  @Get("documents") @Permissions("inventory.view") documents() { return this.service.documents(); }
+  @Get("balances") @Permissions("inventory.view") balances(@Query() query: PaginationQuery) { return this.service.balances(query); }
+  @Get("batches") @Permissions("inventory.view") batches(@Query() query: PaginationQuery) { return this.service.batches(query); }
+  @Get("transactions") @Permissions("inventory.view") transactions(@Query() query: PaginationQuery) { return this.service.transactions(query); }
+  @Get("costs") @Permissions("inventory.view") costs(@Query() query: PaginationQuery) { return this.service.costs(query); }
+  @Get("documents") @Permissions("inventory.view") documents(@Query() query: PaginationQuery) { return this.service.documents(query); }
+  @Get("operations-bootstrap") @Permissions("inventory.post") operationsBootstrap() { return this.service.operationsBootstrap(); }
+  @Delete("batches/:id") @Permissions("inventory.post") removeBatch(@Param("id") id: string) { return this.service.removeBatch(id); }
   @Get("trace/:batchId") @Permissions("inventory.trace") trace(@Param("batchId") batchId: string) { return this.service.trace(batchId); }
   @Post("receipts") @Permissions("inventory.receive") receive(@Body() body: ReceiptBody, @Headers("idempotency-key") key: string | undefined, @Req() req: any) { return this.service.receive(body, key, req.user?.sub); }
   @Post("transfers") @Permissions("inventory.post") transfer(@Body() body: TransferBody, @Headers("idempotency-key") key: string | undefined, @Req() req: any) { return this.service.transfer(body, key, req.user?.sub); }

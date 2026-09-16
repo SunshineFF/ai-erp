@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Button from "@ant-design/react-native/es/button";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { api } from "../api";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { api, pageItems, type PageResult } from "../api";
 import { Feedback, SubmitButton } from "../components/BusinessComponents";
 import { AppIcon } from "../components/AppIcon";
 import { DateField, Field, SelectField } from "../components/FormControls";
@@ -9,8 +9,28 @@ import { appStyles, colors } from "../theme";
 import { today } from "../types";
 
 type FinanceTab = "cash" | "reimbursements";
-type CashFlow = { id: string; occurredAt: string; flowType: "INFLOW" | "OUTFLOW"; amount: string | number; currencyCode: string; description: string; documentNo: string };
-type Reimbursement = { id: string; occurredAt: string; expenseType: string; amount: string | number; currencyCode: string; description: string; documentNo: string };
+type Voucher = { id: string; originalName: string; url: string; mimeType: string; size: number };
+type ExpenseItem = { id?: string; expenseType: string; amount: string | number; description?: string; attachments?: Voucher[]; files?: File[] };
+type Reimbursement = { id: string; occurredAt: string; expenseType: string; amount: string | number; currencyCode: string; description: string; documentNo: string; items?: ExpenseItem[]; cashFlows?: CashFlow[] };
+type CashFlow = { id: string; occurredAt: string; flowType: "INFLOW" | "OUTFLOW"; amount: string | number; currencyCode: string; description: string; documentNo: string; reimbursement?: Reimbursement };
+
+function pickVoucherFiles() {
+  return new Promise<File[]>((resolve) => {
+    if (typeof document === "undefined") return resolve([]);
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/jpeg,image/png,image/webp,image/gif,application/pdf";
+    input.onchange = () => resolve(Array.from(input.files ?? []));
+    input.click();
+  });
+}
+
+async function uploadVoucher(reimbursementId: string, itemId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  return api<Voucher>(`/finance/reimbursements/${reimbursementId}/items/${itemId}/attachments`, { method: "POST", body });
+}
 
 export function FinanceScreen() {
   const [tab, setTab] = useState<FinanceTab>("cash");
@@ -19,97 +39,36 @@ export function FinanceScreen() {
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [cash, expense] = await Promise.all([api<CashFlow[]>("/finance/cash-flows"), api<Reimbursement[]>("/finance/reimbursements")]);
-      setCashFlows(cash);
-      setReimbursements(expense);
-      setNotice("");
-    } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "财务记录加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { void load(); }, [load]);
+  const [page, setPage] = useState(1); const [totalPages, setTotalPages] = useState(1);
+  const load = useCallback(async (nextPage = 1, append = false) => { setLoading(true); try { if (tab === "cash") { const result = await api<PageResult<CashFlow>>(`/finance/cash-flows?page=${nextPage}&pageSize=20`); setCashFlows((current) => append ? [...current, ...pageItems(result)] : pageItems(result)); setTotalPages(result.totalPages); } else { const result = await api<PageResult<Reimbursement>>(`/finance/reimbursements?page=${nextPage}&pageSize=20`); setReimbursements((current) => append ? [...current, ...pageItems(result)] : pageItems(result)); setTotalPages(result.totalPages); } setPage(nextPage); setNotice(""); } catch (reason) { setNotice(reason instanceof Error ? reason.message : "财务记录加载失败"); } finally { setLoading(false); } }, [tab]);
+  useEffect(() => { void load(1, false); }, [load]);
   const rows = tab === "cash" ? cashFlows : reimbursements;
-
-  return (
-    <View style={appStyles.stack}>
-      <View style={styles.toolbar}>
-        <View style={styles.segmented}>
-          <Segment active={tab === "cash"} label="资金流水" onPress={() => { setTab("cash"); setEditing(false); setNotice(""); }} />
-          <Segment active={tab === "reimbursements"} label="费用报销" onPress={() => { setTab("reimbursements"); setEditing(false); setNotice(""); }} />
-        </View>
-        <Pressable accessibilityLabel="刷新财务记录" onPress={() => void load()} style={styles.refreshButton}><AppIcon name="refresh" color={colors.primary} size={18} /></Pressable>
-      </View>
-
-      <Button type={editing ? "ghost" : "primary"} onPress={() => setEditing((current) => !current)}>
-        <View style={styles.buttonContent}><AppIcon name={editing ? "back" : "plus"} color={editing ? colors.primary : "#fff"} size={16} /><Text style={[styles.buttonText, editing && styles.buttonTextGhost]}>{editing ? "返回记录" : tab === "cash" ? "新增流水" : "新增报销"}</Text></View>
-      </Button>
-
-      <Feedback message={notice} success={notice.startsWith("已保存")} />
-      {editing ? (tab === "cash" ? <CashFlowForm onSaved={async (documentNo) => { setNotice(`已保存 ${documentNo}`); setEditing(false); await load(); }} /> : <ReimbursementForm onSaved={async (documentNo) => { setNotice(`已保存 ${documentNo}`); setEditing(false); await load(); }} />) : <FinanceList tab={tab} rows={rows} loading={loading} />}
-    </View>
-  );
+  return <View style={appStyles.stack}><View style={styles.toolbar}><View style={styles.segmented}><Segment active={tab === "cash"} label="现金流水" onPress={() => { setTab("cash"); setEditing(false); setNotice(""); }} /><Segment active={tab === "reimbursements"} label="费用报销" onPress={() => { setTab("reimbursements"); setEditing(false); setNotice(""); }} /></View><Pressable accessibilityLabel="刷新财务记录" onPress={() => void load(1, false)} style={styles.refreshButton}><AppIcon name="refresh" color={colors.primary} size={18} /></Pressable></View><Button type={editing ? "ghost" : "primary"} onPress={() => setEditing((current) => !current)}><View style={styles.buttonContent}><AppIcon name={editing ? "back" : "plus"} color={editing ? colors.primary : "#fff"} size={16} /><Text style={[styles.buttonText, editing && styles.buttonTextGhost]}>{editing ? "返回记录" : tab === "cash" ? "新增流水" : "新增报销"}</Text></View></Button><Feedback message={notice} success={notice.startsWith("已保存")} />{editing ? (tab === "cash" ? <CashFlowForm onSaved={async (documentNo) => { setNotice(`已保存 ${documentNo}`); setEditing(false); await load(1, false); }} /> : <ReimbursementForm onSaved={async (documentNo) => { setNotice(`已保存 ${documentNo}`); setEditing(false); await load(1, false); }} />) : <><FinanceList tab={tab} rows={rows} loading={loading} onChanged={() => load(1, false)} />{page < totalPages && <Button type="ghost" loading={loading} onPress={() => void load(page + 1, true)}>加载更多</Button>}</>}</View>;
 }
 
-function Segment({ active, label, onPress }: { active: boolean; label: string; onPress: () => void }) {
-  return <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={onPress} style={[styles.segment, active && styles.segmentActive]}><Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text></Pressable>;
-}
+function Segment({ active, label, onPress }: { active: boolean; label: string; onPress: () => void }) { return <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={onPress} style={[styles.segment, active && styles.segmentActive]}><Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text></Pressable>; }
 
-function FinanceList({ tab, rows, loading }: { tab: FinanceTab; rows: Array<CashFlow | Reimbursement>; loading: boolean }) {
+function FinanceList({ tab, rows, loading, onChanged }: { tab: FinanceTab; rows: Array<CashFlow | Reimbursement>; loading: boolean; onChanged: () => Promise<void> }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   if (loading && !rows.length) return <Text style={styles.empty}>加载中...</Text>;
-  if (!rows.length) return <Text style={styles.empty}>{tab === "cash" ? "暂无资金流水" : "暂无报销记录"}</Text>;
-  return <View style={styles.list}>{rows.map((row, index) => {
-    const cash = row as CashFlow;
-    const reimbursement = row as Reimbursement;
-    const title = tab === "cash" ? (cash.flowType === "INFLOW" ? "收入" : "支出") : reimbursement.expenseType;
-    const positive = tab === "cash" && cash.flowType === "INFLOW";
-    return <View key={row.id} style={[styles.record, index < rows.length - 1 && styles.recordBorder]}><View style={styles.recordTop}><View style={styles.recordCopy}><Text style={styles.recordTitle}>{title}</Text><Text numberOfLines={2} style={styles.description}>{row.description || "无描述"}</Text></View><Text style={[styles.amount, positive && styles.amountPositive]}>{positive ? "+" : "-"}{Number(row.amount).toFixed(2)} {row.currencyCode}</Text></View><View style={styles.meta}><Text style={styles.metaText}>{new Date(row.occurredAt).toLocaleDateString("zh-CN")}</Text><Text style={styles.metaText}>{row.documentNo}</Text></View></View>;
-  })}</View>;
+  if (!rows.length) return <Text style={styles.empty}>{tab === "cash" ? "暂无现金流水" : "暂无报销记录"}</Text>;
+  const addVoucher = async (reimbursementId: string, itemId?: string) => {
+    if (!itemId) return;
+    const files = await pickVoucherFiles();
+    for (const file of files) await uploadVoucher(reimbursementId, itemId, file);
+    if (files.length) await onChanged();
+  };
+  return <View style={styles.list}>{rows.map((row, index) => { const cash = row as CashFlow; const reimbursement = row as Reimbursement; const isCash = tab === "cash"; const title = isCash ? (cash.flowType === "INFLOW" ? "收入" : "支出") : (reimbursement.items?.length ? `${reimbursement.items.length} 笔费用` : reimbursement.expenseType); const positive = isCash && cash.flowType === "INFLOW"; const linked = isCash ? cash.reimbursement : undefined; const open = expanded === row.id; const detailItems = isCash ? (open ? linked?.items : undefined) : reimbursement.items; const reimbursementId = isCash ? linked?.id : reimbursement.id; return <View key={row.id} style={[styles.record, index < rows.length - 1 && styles.recordBorder]}><View style={styles.recordTop}><View style={styles.recordCopy}><Text style={styles.recordTitle}>{title}</Text><Text numberOfLines={2} style={styles.description}>{row.description || "无描述"}</Text></View><Text style={[styles.amount, positive && styles.amountPositive]}>{positive ? "+" : "-"}{Number(row.amount).toFixed(2)} {row.currencyCode}</Text></View><View style={styles.meta}><Text style={styles.metaText}>{new Date(row.occurredAt).toLocaleDateString("zh-CN")}</Text><Text style={styles.metaText}>{row.documentNo}</Text></View>{linked && <Pressable accessibilityRole="button" onPress={() => setExpanded(open ? null : row.id)} style={styles.linkedButton}><AppIcon name={open ? "chevron-down" : "chevron-right"} color={colors.primary} size={15} /><Text style={styles.linkedText}>关联报销 {linked.documentNo}</Text></Pressable>}{detailItems?.map((item, itemIndex) => <View key={item.id ?? itemIndex} style={styles.detailBlock}><View style={styles.detailRow}><Text style={styles.detailText}>{item.expenseType}{item.description ? ` · ${item.description}` : ""}</Text><Text style={styles.detailAmount}>{Number(item.amount).toFixed(2)} {row.currencyCode}</Text></View>{item.attachments?.map((attachment) => <Pressable key={attachment.id} accessibilityRole="link" onPress={() => void Linking.openURL(attachment.url)} style={styles.attachmentLink}><AppIcon name="attachment" color={colors.primary} size={13} /><Text numberOfLines={1} style={styles.attachmentText}>{attachment.originalName}</Text></Pressable>)}{!isCash && reimbursementId && <Pressable accessibilityRole="button" onPress={() => void addVoucher(reimbursementId, item.id)} style={styles.attachmentLink}><AppIcon name="upload" color={colors.primary} size={13} /><Text style={styles.attachmentText}>上传支付凭证</Text></Pressable>}</View>)}</View>; })}</View>;
 }
 
-function CashFlowForm({ onSaved }: { onSaved: (documentNo: string) => Promise<void> }) {
-  const [form, setForm] = useState({ occurredAt: today(), flowType: "OUTFLOW", amount: "", currencyCode: "CNY", description: "" });
-  const [saving, setSaving] = useState(false); const [error, setError] = useState("");
-  const submit = async () => { setSaving(true); setError(""); try { const row = await api<CashFlow>("/finance/cash-flows", { method: "POST", body: JSON.stringify({ ...form, amount: Number(form.amount) }) }); await onSaved(row.documentNo); } catch (reason) { setError(reason instanceof Error ? reason.message : "保存失败"); } finally { setSaving(false); } };
-  return <View style={styles.form}><Text style={styles.formTitle}>流水信息</Text><DateField label="日期" value={form.occurredAt} onChange={(occurredAt) => setForm({ ...form, occurredAt })} /><SelectField label="收支类型" value={form.flowType} options={[["INFLOW", "收入"], ["OUTFLOW", "支出"]]} onChange={(flowType) => setForm({ ...form, flowType })} /><Field label="金额" type="number" value={form.amount} placeholder="请输入金额" onChange={(amount) => setForm({ ...form, amount })} /><SelectField label="币种" value={form.currencyCode} options={[["CNY", "人民币 CNY"], ["USD", "美元 USD"]]} onChange={(currencyCode) => setForm({ ...form, currencyCode })} /><Field label="描述" value={form.description} placeholder="填写用途或来源" onChange={(description) => setForm({ ...form, description })} /><Feedback message={error} success={false} /><SubmitButton loading={saving} disabled={!form.occurredAt || Number(form.amount) <= 0 || !form.description.trim()} onPress={() => void submit()}>保存流水</SubmitButton></View>;
-}
+function CashFlowForm({ onSaved }: { onSaved: (documentNo: string) => Promise<void> }) { const [form, setForm] = useState({ occurredAt: today(), flowType: "OUTFLOW", amount: "", currencyCode: "CNY", description: "" }); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const submit = async () => { setSaving(true); setError(""); try { const row = await api<CashFlow>("/finance/cash-flows", { method: "POST", body: JSON.stringify({ ...form, amount: Number(form.amount) }) }); await onSaved(row.documentNo); } catch (reason) { setError(reason instanceof Error ? reason.message : "保存失败"); } finally { setSaving(false); } }; return <View style={styles.form}><Text style={styles.formTitle}>流水信息</Text><DateField label="日期" value={form.occurredAt} onChange={(occurredAt) => setForm({ ...form, occurredAt })} /><SelectField label="收支类型" value={form.flowType} options={[["INFLOW", "收入"], ["OUTFLOW", "支出"]]} searchable={false} onChange={(flowType) => setForm({ ...form, flowType })} /><Field label="金额" type="number" value={form.amount} placeholder="请输入金额" onChange={(amount) => setForm({ ...form, amount })} /><SelectField label="币种" value={form.currencyCode} options={[["CNY", "人民币 CNY"], ["USD", "美元 USD"]]} searchable={false} onChange={(currencyCode) => setForm({ ...form, currencyCode })} /><Field label="描述" value={form.description} placeholder="填写用途或来源" onChange={(description) => setForm({ ...form, description })} /><Feedback message={error} success={false} /><SubmitButton loading={saving} disabled={!form.occurredAt || Number(form.amount) <= 0 || !form.description.trim()} onPress={() => void submit()}>保存流水</SubmitButton></View>; }
 
 function ReimbursementForm({ onSaved }: { onSaved: (documentNo: string) => Promise<void> }) {
-  const [form, setForm] = useState({ occurredAt: today(), expenseType: "办公费用", amount: "", currencyCode: "CNY", description: "" });
-  const [saving, setSaving] = useState(false); const [error, setError] = useState("");
-  const submit = async () => { setSaving(true); setError(""); try { const row = await api<Reimbursement>("/finance/reimbursements", { method: "POST", body: JSON.stringify({ ...form, amount: Number(form.amount) }) }); await onSaved(row.documentNo); } catch (reason) { setError(reason instanceof Error ? reason.message : "保存失败"); } finally { setSaving(false); } };
-  return <View style={styles.form}><Text style={styles.formTitle}>报销信息</Text><DateField label="日期" value={form.occurredAt} onChange={(occurredAt) => setForm({ ...form, occurredAt })} /><SelectField label="费用类型" value={form.expenseType} options={[["办公费用", "办公费用"], ["差旅费用", "差旅费用"], ["运输费用", "运输费用"], ["招待费用", "招待费用"], ["其他费用", "其他费用"]]} onChange={(expenseType) => setForm({ ...form, expenseType })} /><Field label="金额" type="number" value={form.amount} placeholder="请输入金额" onChange={(amount) => setForm({ ...form, amount })} /><SelectField label="币种" value={form.currencyCode} options={[["CNY", "人民币 CNY"], ["USD", "美元 USD"]]} onChange={(currencyCode) => setForm({ ...form, currencyCode })} /><Field label="描述" value={form.description} placeholder="填写报销事项" onChange={(description) => setForm({ ...form, description })} /><Feedback message={error} success={false} /><SubmitButton loading={saving} disabled={!form.occurredAt || Number(form.amount) <= 0 || !form.description.trim()} onPress={() => void submit()}>保存报销</SubmitButton></View>;
+  const [form, setForm] = useState({ occurredAt: today(), currencyCode: "CNY", description: "", items: [{ expenseType: "办公费用", amount: "", description: "", files: [] }] as ExpenseItem[] });
+  const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const total = form.items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0); const valid = form.items.length > 0 && form.items.every((item) => item.expenseType.trim() && Number(item.amount) > 0);
+  const submit = async () => { setSaving(true); setError(""); try { const row = await api<Reimbursement>("/finance/reimbursements", { method: "POST", body: JSON.stringify({ occurredAt: form.occurredAt, currencyCode: form.currencyCode, description: form.description, items: form.items.map(({ files: _files, ...item }) => ({ ...item, amount: Number(item.amount) })) }) }); for (const [index, item] of form.items.entries()) for (const file of item.files ?? []) await uploadVoucher(row.id, row.items?.[index].id ?? "", file); await onSaved(row.documentNo); } catch (reason) { setError(reason instanceof Error ? reason.message : "保存失败"); } finally { setSaving(false); } };
+  const updateItem = (index: number, patch: Partial<ExpenseItem>) => setForm((current) => ({ ...current, items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) }));
+  return <View style={styles.form}><Text style={styles.formTitle}>报销信息</Text><DateField label="日期" value={form.occurredAt} onChange={(occurredAt) => setForm({ ...form, occurredAt })} /><SelectField label="币种" value={form.currencyCode} options={[["CNY", "人民币 CNY"], ["USD", "美元 USD"]]} searchable={false} onChange={(currencyCode) => setForm({ ...form, currencyCode })} /><Field label="报销说明" value={form.description} placeholder="填写报销说明" onChange={(description) => setForm({ ...form, description })} /><View style={styles.itemsHeader}><Text style={styles.itemsTitle}>费用明细</Text><Button type="ghost" size="small" onPress={() => setForm((current) => ({ ...current, items: [...current.items, { expenseType: "", amount: "", description: "", files: [] }] }))}><View style={styles.buttonContent}><AppIcon name="plus" color={colors.primary} size={14} /><Text style={styles.ghostText}>添加费用</Text></View></Button></View>{form.items.map((item, index) => <View key={index} style={styles.itemCard}><View style={styles.itemHeader}><Text style={styles.itemIndex}>费用 {index + 1}</Text>{form.items.length > 1 && <Pressable accessibilityLabel={`删除费用 ${index + 1}`} onPress={() => setForm((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><AppIcon name="trash" color={colors.error} size={17} /></Pressable>}</View><SelectField label="费用类型" value={item.expenseType} options={[["办公费用", "办公费用"], ["差旅费用", "差旅费用"], ["运输费用", "运输费用"], ["招待费用", "招待费用"], ["其他费用", "其他费用"]]} searchable={false} onChange={(expenseType) => updateItem(index, { expenseType })} /><Field label="金额" type="number" value={String(item.amount)} placeholder="请输入金额" onChange={(amount) => updateItem(index, { amount })} /><Field label="说明" value={item.description ?? ""} placeholder="填写费用说明" onChange={(description) => updateItem(index, { description })} /><Pressable accessibilityRole="button" onPress={async () => updateItem(index, { files: await pickVoucherFiles() })} style={styles.voucherPicker}><AppIcon name="upload" color={colors.primary} size={16} /><View style={styles.voucherPickerCopy}><Text style={styles.voucherPickerTitle}>支付凭证</Text><Text style={styles.voucherPickerHint}>{item.files?.length ? `已选择 ${item.files.length} 个文件` : "支持图片或 PDF，单个不超过 10MB"}</Text></View></Pressable></View>)}<View style={styles.totalRow}><Text style={styles.totalLabel}>报销合计</Text><Text style={styles.totalAmount}>{total.toFixed(2)} {form.currencyCode}</Text></View><Feedback message={error} success={false} /><SubmitButton loading={saving} disabled={!form.occurredAt || !valid} onPress={() => void submit()}>保存报销</SubmitButton></View>;
 }
 
-const styles = StyleSheet.create({
-  toolbar: { minHeight: 46, flexDirection: "row", alignItems: "center" },
-  segmented: { flex: 1, flexDirection: "row", padding: 3, borderRadius: 7, backgroundColor: "#e7edeb" },
-  segment: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: 5 },
-  segmentActive: { backgroundColor: colors.surface },
-  segmentText: { color: colors.secondary, fontSize: 13, fontWeight: "600" },
-  segmentTextActive: { color: colors.primary, fontWeight: "700" },
-  refreshButton: { width: 44, height: 44, marginLeft: 8, alignItems: "center", justifyContent: "center" },
-  buttonContent: { flexDirection: "row", alignItems: "center", justifyContent: "center" },
-  buttonText: { color: "#fff", fontSize: 15, marginLeft: 7 },
-  buttonTextGhost: { color: colors.primary },
-  list: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: "hidden", backgroundColor: colors.surface },
-  record: { padding: 14 },
-  recordBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  recordTop: { flexDirection: "row", alignItems: "flex-start" },
-  recordCopy: { flex: 1, minWidth: 0, paddingRight: 12 },
-  recordTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
-  description: { color: colors.secondary, fontSize: 12, lineHeight: 18, marginTop: 4 },
-  amount: { color: colors.error, fontSize: 15, fontWeight: "700" },
-  amountPositive: { color: colors.success },
-  meta: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
-  metaText: { color: "#8a9996", fontSize: 11 },
-  form: { gap: 12, paddingTop: 4 },
-  formTitle: { color: colors.text, fontSize: 16, fontWeight: "700", paddingBottom: 4 },
-  empty: { color: colors.secondary, fontSize: 14, textAlign: "center", paddingVertical: 48 },
-});
+const styles = StyleSheet.create({ toolbar: { minHeight: 46, flexDirection: "row", alignItems: "center" }, segmented: { flex: 1, flexDirection: "row", padding: 3, borderRadius: 7, backgroundColor: "#e7edeb" }, segment: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: 5 }, segmentActive: { backgroundColor: colors.surface }, segmentText: { color: colors.secondary, fontSize: 13, fontWeight: "600" }, segmentTextActive: { color: colors.primary, fontWeight: "700" }, refreshButton: { width: 44, height: 44, marginLeft: 8, alignItems: "center", justifyContent: "center" }, buttonContent: { flexDirection: "row", alignItems: "center", justifyContent: "center" }, buttonText: { color: "#fff", fontSize: 15, marginLeft: 7 }, buttonTextGhost: { color: colors.primary }, ghostText: { color: colors.primary, fontSize: 13, marginLeft: 5 }, list: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: "hidden", backgroundColor: colors.surface }, record: { padding: 14 }, recordBorder: { borderBottomWidth: 1, borderBottomColor: colors.border }, recordTop: { flexDirection: "row", alignItems: "flex-start" }, recordCopy: { flex: 1, minWidth: 0, paddingRight: 12 }, recordTitle: { color: colors.text, fontSize: 15, fontWeight: "700" }, description: { color: colors.secondary, fontSize: 12, lineHeight: 18, marginTop: 4 }, amount: { color: colors.error, fontSize: 15, fontWeight: "700" }, amountPositive: { color: colors.success }, meta: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 }, metaText: { color: "#8a9996", fontSize: 11 }, linkedButton: { flexDirection: "row", alignItems: "center", marginTop: 10, minHeight: 28 }, linkedText: { color: colors.primary, fontSize: 12, marginLeft: 4 }, detailBlock: { paddingVertical: 7, paddingLeft: 10, borderTopWidth: 1, borderTopColor: colors.border }, detailRow: { flexDirection: "row", justifyContent: "space-between" }, detailText: { color: colors.secondary, fontSize: 12, flex: 1, paddingRight: 8 }, detailAmount: { color: colors.text, fontSize: 12, fontWeight: "600" }, attachmentLink: { minHeight: 30, flexDirection: "row", alignItems: "center", paddingTop: 6 }, attachmentText: { color: colors.primary, fontSize: 12, marginLeft: 5, flex: 1 }, form: { gap: 12, paddingTop: 4 }, formTitle: { color: colors.text, fontSize: 16, fontWeight: "700", paddingBottom: 4 }, itemsHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", minHeight: 40 }, itemsTitle: { color: colors.text, fontSize: 15, fontWeight: "700" }, itemCard: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 12, gap: 10 }, itemHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, itemIndex: { color: colors.text, fontSize: 13, fontWeight: "700" }, voucherPicker: { minHeight: 52, flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: colors.border, borderRadius: 7, paddingHorizontal: 12, backgroundColor: "#f7faf9" }, voucherPickerCopy: { marginLeft: 9, flex: 1 }, voucherPickerTitle: { color: colors.primary, fontSize: 13, fontWeight: "600" }, voucherPickerHint: { color: colors.secondary, fontSize: 11, marginTop: 3 }, totalRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 4 }, totalLabel: { color: colors.secondary, fontSize: 14 }, totalAmount: { color: colors.primary, fontSize: 16, fontWeight: "700" }, empty: { color: colors.secondary, fontSize: 14, textAlign: "center", paddingVertical: 48 } });

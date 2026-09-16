@@ -9,16 +9,19 @@ import {
   House,
   LogOut,
   PackageCheck,
+  Paperclip,
   Plus,
   RefreshCw,
   ShoppingCart,
   Trash2,
+  Upload,
   UserRound,
   WalletCards,
 } from "lucide-react";
 
 export type AppIconName =
   | "app"
+  | "attachment"
   | "back"
   | "check"
   | "chevron-down"
@@ -31,11 +34,13 @@ export type AppIconName =
   | "plus"
   | "refresh"
   | "trash"
+  | "upload"
   | "user"
   | "finance";
 
 const icons = {
   app: Boxes,
+  attachment: Paperclip,
   back: ChevronLeft,
   check: Check,
   "chevron-down": ChevronDown,
@@ -48,6 +53,7 @@ const icons = {
   plus: Plus,
   refresh: RefreshCw,
   trash: Trash2,
+  upload: Upload,
   user: UserRound,
   finance: WalletCards,
 };

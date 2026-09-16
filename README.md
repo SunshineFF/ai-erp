@@ -44,8 +44,12 @@ npm run dev:api
 npm run dev:web
 ```
 
-- API：`http://localhost:3000/api`
+- API：`http://localhost:3030/api`
 - Web/PWA：`http://localhost:5173`
+
+### 媒体存储
+
+费用报销明细的支付凭证默认保存在 API 的 `storage/media` 目录，并通过 `/media/` 提供访问。生产环境可在 `apps/api/.env` 中设置 `MEDIA_STORAGE="aliyun-oss"`，并填写 `ALIYUN_OSS_REGION`、`ALIYUN_OSS_BUCKET`、`ALIYUN_OSS_ACCESS_KEY_ID`、`ALIYUN_OSS_ACCESS_KEY_SECRET`。如使用 CDN，设置 `ALIYUN_OSS_CDN_BASE_URL`，上传接口会返回 CDN 地址；AccessKey 只保存在后端环境变量，不会下发到前端。
 
 ## 验证
 
@@ -62,6 +66,7 @@ npm run build
 - `apps/api/prisma/schema.prisma`：一期 MVP Prisma 表结构。
 - `apps/api/src/modules`：认证、工作台、物料、BOM、库存和生产 API。
 - `apps/web/src`：React 工作台、列表视图和手机端响应式布局。
+- Web 业务页面使用 BrowserRouter 独立路径；生产静态服务器必须把未知页面路径回退到 `index.html`（Nginx 使用 `try_files $uri $uri/ /index.html`）。
 - `docs/04-一期数据库表设计.md`：逻辑表、字段、索引和约束设计。
 
 ## 上线前事项

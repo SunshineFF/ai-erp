@@ -59,6 +59,10 @@ async function main() {
   await prisma.unit.upsert({ where: { companyId_code: { companyId: company.id, code: "PCS" } }, update: {}, create: { companyId: company.id, code: "PCS", name: "件", precision: 0 } });
   await prisma.materialCategory.upsert({ where: { companyId_code: { companyId: company.id, code: "RAW" } }, update: {}, create: { companyId: company.id, code: "RAW", name: "原材料" } });
   await prisma.materialCategory.upsert({ where: { companyId_code: { companyId: company.id, code: "FINISHED" } }, update: {}, create: { companyId: company.id, code: "FINISHED", name: "成品" } });
+  for (const category of [
+    { code: "I", name: "国内客户" },
+    { code: "O", name: "国外客户" },
+  ]) await prisma.partnerCategory.upsert({ where: { companyId_partnerType_code: { companyId: company.id, partnerType: "customer", code: category.code } }, update: {}, create: { companyId: company.id, partnerType: "customer", code: category.code, name: category.name } });
   const warehouse = await prisma.warehouse.upsert({ where: { companyId_code: { companyId: company.id, code: "MAIN" } }, update: {}, create: { companyId: company.id, code: "MAIN", name: "主仓库" } });
   await prisma.location.upsert({ where: { warehouseId_code: { warehouseId: warehouse.id, code: "RAW-A01" } }, update: {}, create: { warehouseId: warehouse.id, code: "RAW-A01", name: "原料区 A01", locationType: "RAW" } });
   await prisma.location.upsert({ where: { warehouseId_code: { warehouseId: warehouse.id, code: "FG-D01" } }, update: {}, create: { warehouseId: warehouse.id, code: "FG-D01", name: "成品区 D01", locationType: "FINISHED_GOODS" } });

@@ -3,8 +3,9 @@ import "dotenv/config";
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { AppModule } from "./app.module";
+import { PrismaExceptionFilter } from "./prisma-exception.filter";
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -19,7 +20,9 @@ async function bootstrap() {
   ])];
   app.enableCors({ origin: allowedOrigins, exposedHeaders: ["X-Access-Token"] });
   app.useStaticAssets(join(process.cwd(), "uploads", "materials"), { prefix: "/uploads/materials/" });
+  app.useStaticAssets(resolve(process.cwd(), process.env.MEDIA_LOCAL_DIR ?? "storage/media"), { prefix: "/media/" });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  await app.listen(Number(process.env.PORT ?? 3000));
+  app.useGlobalFilters(new PrismaExceptionFilter());
+  await app.listen(Number(process.env.PORT ?? 3030));
 }
 bootstrap();

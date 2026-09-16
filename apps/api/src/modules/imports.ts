@@ -1,14 +1,16 @@
-import { BadRequestException, Body, Controller, Get, Injectable, Param, Patch, Post, Req, Res, UploadedFile, UseInterceptors } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Injectable, Param, Patch, Post, Query, Req, Res, UploadedFile, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ImportTaskStatus, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname, extname, join } from "node:path";
 import * as readExcelModule from "read-excel-file/node";
 import { PrismaService } from "../prisma.service";
 import { Permissions } from "../security";
 import { InventoryPostingService } from "./posting";
+import { PaginationQuery, pageResult, parsePagination } from "../pagination";
+import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 
 type UploadedDocument = { originalname: string; mimetype: string; size: number; buffer: Buffer };
 type ParsedItem = { sheetName: string; rowNo: number; parsedData: Record<string, unknown>; confidence: number; needsConfirmation: boolean; validationErrors: string[] };
@@ -24,8 +26,9 @@ const readXlsxFile = readExcelModule.default;
 export class ImportsService {
   constructor(private readonly prisma: PrismaService, private readonly posting: InventoryPostingService) {}
 
-  list() { return this.prisma.importTask.findMany({ include: { file: true, items: true }, orderBy: { createdAt: "desc" }, take: 100 }); }
+  async list(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.importTask.findMany({ include: { file: true, items: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.importTask.count()]); return pageResult(items, total, page, pageSize); }
   get(id: string) { return this.prisma.importTask.findUniqueOrThrow({ where: { id }, include: { file: true, items: true } }); }
+  async remove(id: string) { const task = ensureFound(await this.prisma.importTask.findUnique({ where: { id }, include: { file: true } }), "导入任务不存在"); if (task.status === "CONFIRMED") deleteConflict(`导入任务“${task.file.originalName}”已确认，无法删除`, [{ resource: "已确认导入", count: 1 }]); const filePath = join(process.cwd(), task.file.storagePath); const backup = await readFile(filePath); await unlink(filePath); try { await this.prisma.$transaction(async (tx) => { await tx.importTaskItem.deleteMany({ where: { importTaskId: id } }); await tx.importTask.delete({ where: { id } }); await tx.documentFile.delete({ where: { id: task.documentFileId } }); }); } catch (error) { await mkdir(dirname(filePath), { recursive: true }); await writeFile(filePath, backup); throw error; } return deleted(id); }
   async file(id: string, actorUserId?: string) { const task = await this.prisma.importTask.findUniqueOrThrow({ where: { id }, include: { file: true } }); await this.prisma.auditLog.create({ data: { companyId: task.companyId, actorUserId, action: "import.file_download", resourceType: "DocumentFile", resourceId: task.file.id } }); return { ...task.file, absolutePath: join(process.cwd(), task.file.storagePath) }; }
 
   private async parseWorkbook(buffer: Buffer): Promise<ParsedItem[]> {
@@ -96,10 +99,11 @@ export class ImportsService {
 @Controller("imports")
 export class ImportsController {
   constructor(private readonly service: ImportsService) {}
-  @Get() @Permissions("import.view") list() { return this.service.list(); }
+  @Get() @Permissions("import.view") list(@Query() query: PaginationQuery) { return this.service.list(query); }
   @Get(":id") @Permissions("import.view") get(@Param("id") id: string) { return this.service.get(id); }
   @Get(":id/file") @Permissions("import.view") async file(@Param("id") id: string, @Req() req: any, @Res() response: any) { const file = await this.service.file(id, req.user?.sub); response.setHeader("Content-Type", file.mimeType); response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.originalName)}`); createReadStream(file.absolutePath).pipe(response); }
   @Post("upload") @Permissions("import.upload") @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 15 * 1024 * 1024 } })) upload(@UploadedFile() file: UploadedDocument | undefined, @Body("targetType") targetType: string, @Req() req: any) { return this.service.upload(file, targetType, req.user?.sub); }
   @Patch(":id/items/:itemId") @Permissions("import.upload") updateItem(@Param("id") id: string, @Param("itemId") itemId: string, @Body() body: { parsedData: Record<string, unknown> }) { return this.service.updateItem(id, itemId, body.parsedData); }
   @Post(":id/confirm") @Permissions("import.confirm") confirm(@Param("id") id: string, @Body() body: { fieldMapping?: Record<string, unknown> }, @Req() req: any) { return this.service.confirm(id, body.fieldMapping ?? {}, req.user?.sub); }
+  @Delete(":id") @Permissions("import.upload") remove(@Param("id") id: string) { return this.service.remove(id); }
 }

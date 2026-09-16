@@ -15,7 +15,7 @@ const localOrigins = ["http://localhost:5173", "http://localhost:5177", "http://
 @Injectable()
 export class AuthService {
   constructor(private readonly prisma: PrismaService, private readonly jwt: JwtService) {}
-  private wecomConfig() { return { corpId: process.env.WECOM_CORP_ID, agentId: process.env.WECOM_AGENT_ID, secret: process.env.WECOM_SECRET, redirectUri: process.env.WECOM_REDIRECT_URI ?? "http://localhost:3000/api/auth/wecom/callback", scope: process.env.WECOM_SCOPE ?? "snsapi_base" }; }
+  private wecomConfig() { return { corpId: process.env.WECOM_CORP_ID, agentId: process.env.WECOM_AGENT_ID, secret: process.env.WECOM_SECRET, redirectUri: process.env.WECOM_REDIRECT_URI ?? "http://localhost:3030/api/auth/wecom/callback", scope: process.env.WECOM_SCOPE ?? "snsapi_base" }; }
   wecomEnabled() { const config = this.wecomConfig(); return Boolean(config.corpId && config.agentId && config.secret); }
   private async issue(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { userRoles: { include: { role: { include: { rolePermissions: { include: { permission: true } } } } } } } });
@@ -78,6 +78,8 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
   @Public()
   @Post("login") login(@Body() body: { username: string; password: string }) { return this.auth.login(body.username, body.password); }
+  @Public()
+  @Post("loginRequest") loginRequest(@Body() body: { username: string; password: string }) { return this.auth.login(body.username, body.password); }
   @Public()
   @Get("wecom/config") wecomConfig(@Req() req: any) { return this.auth.wecomStart(req.headers["user-agent"], req.headers.origin); }
   @Public()

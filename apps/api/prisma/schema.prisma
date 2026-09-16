@@ -118,6 +118,11 @@ enum BillStatus {
   VOIDED
 }
 
+enum PurchasePriceBasis {
+  TAX_INCLUDED
+  CASH
+}
+
 model Company {
   id               String          @id @default(uuid())
   code             String          @unique
@@ -142,6 +147,7 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   userRoles    UserRole[]
+  salesShipments SalesShipment[]
 }
 
 model Role {
@@ -237,6 +243,7 @@ model Unit {
   name      String
   precision Int     @default(3)
   isActive  Boolean @default(true)
+  supplierQuotes SupplierProductQuote[]
 
   @@unique([companyId, code])
 }
@@ -259,6 +266,7 @@ model MaterialCategory {
   code      String
   name      String
   isActive  Boolean @default(true)
+  suppliers Supplier[]
 
   @@unique([companyId, code])
 }
@@ -284,6 +292,38 @@ model Location {
   @@unique([warehouseId, code])
 }
 
+model ProductAttribute {
+  id          String                 @id @default(uuid())
+  companyId   String
+  code        String
+  name        String
+  sortOrder   Int                    @default(0)
+  isActive    Boolean                @default(true)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  values      ProductAttributeValue[]
+  materials   MaterialAttribute[]
+
+  @@unique([companyId, code])
+  @@index([companyId, sortOrder])
+}
+
+model ProductAttributeValue {
+  id           String                 @id @default(uuid())
+  attributeId  String
+  code         String
+  name         String
+  sortOrder    Int                    @default(0)
+  isActive     Boolean                @default(true)
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  attribute    ProductAttribute       @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  variants     MaterialVariantValue[]
+
+  @@unique([attributeId, code])
+  @@index([attributeId, sortOrder])
+}
+
 model Material {
   id                String       @id @default(uuid())
   companyId         String
@@ -291,6 +331,10 @@ model Material {
   name              String
   specification     String?
   imageUrl          String?
+  imageStorageKey   String?
+  imageStorageProvider String?
+  parentMaterialId  String?
+  variantEnabled    Boolean         @default(false)
   categoryId        String
   materialType      MaterialType
   baseUnitId        String
@@ -307,26 +351,145 @@ model Material {
   isActive          Boolean      @default(true)
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
+  parentMaterial    Material?    @relation("MaterialVariants", fields: [parentMaterialId], references: [id], onDelete: Restrict)
+  variants          Material[]    @relation("MaterialVariants")
+  attributes        MaterialAttribute[]
+  variantValues     MaterialVariantValue[]
+  supplierProducts  SupplierProduct[]
+
+  @@unique([companyId, code])
+  @@index([parentMaterialId])
+}
+
+model MaterialAttribute {
+  id          String          @id @default(uuid())
+  materialId  String
+  attributeId String
+  material    Material        @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  attribute   ProductAttribute @relation(fields: [attributeId], references: [id], onDelete: Restrict)
+
+  @@unique([materialId, attributeId])
+}
+
+model MaterialVariantValue {
+  id                String                 @id @default(uuid())
+  materialId        String
+  attributeValueId  String
+  material          Material               @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  attributeValue    ProductAttributeValue @relation(fields: [attributeValueId], references: [id], onDelete: Restrict)
+
+  @@unique([materialId, attributeValueId])
+  @@index([attributeValueId])
+}
+
+model PartnerCategory {
+  id          String     @id @default(uuid())
+  companyId   String
+  code        String
+  name        String
+  partnerType String
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  customers   Customer[]
+
+  @@unique([companyId, partnerType, code])
+}
+
+model Supplier {
+  id                String               @id @default(uuid())
+  companyId         String
+  code              String
+  name              String
+  materialCategoryId String
+  contactName       String?
+  phone             String?
+  address           String?
+  currencyCode      String               @default("CNY")
+  isActive       Boolean              @default(true)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  materialCategory MaterialCategory    @relation(fields: [materialCategoryId], references: [id], onDelete: Restrict)
+  purchaseOrders PurchaseOrder[]
+  bills          Bill[]
+  products       SupplierProduct[]
+  contacts       SupplierContact[]
+  addresses      SupplierAddress[]
 
   @@unique([companyId, code])
 }
 
-model Supplier {
-  id             String          @id @default(uuid())
-  companyId      String
-  code           String
-  name           String
-  contactName    String?
-  phone          String?
-  address        String?
-  currencyCode   String          @default("CNY")
-  isActive       Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  purchaseOrders PurchaseOrder[]
-  bills          Bill[]
+model SupplierProduct {
+  id         String                 @id @default(uuid())
+  supplierId String
+  materialId String
+  isActive   Boolean                @default(true)
+  remark     String?
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  supplier   Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  material   Material               @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  quotes     SupplierProductQuote[]
 
-  @@unique([companyId, code])
+  @@unique([supplierId, materialId])
+  @@index([materialId])
+}
+
+model SupplierProductQuote {
+  id                String              @id @default(uuid())
+  supplierProductId String
+  currencyCode      String              @default("CNY")
+  unitId            String
+  taxIncludedPrice  Decimal             @db.Decimal(18, 6)
+  cashPrice         Decimal?            @db.Decimal(18, 6)
+  supplierTaxRate   Decimal             @db.Decimal(5, 4)
+  effectiveFrom     DateTime            @db.Date
+  effectiveTo       DateTime?           @db.Date
+  transportMode     String?
+  deliveryTerms     String?
+  freightNote       String?
+  isActive          Boolean             @default(true)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  supplierProduct   SupplierProduct     @relation(fields: [supplierProductId], references: [id], onDelete: Cascade)
+  unit              Unit                @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  purchaseLines     PurchaseOrderLine[]
+
+  @@index([supplierProductId, effectiveFrom])
+}
+
+model SupplierContact {
+  id         String   @id @default(uuid())
+  supplierId String
+  name       String
+  title      String?
+  mobile     String?
+  landline   String?
+  email      String?
+  isPrimary  Boolean  @default(false)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId, isPrimary])
+}
+
+model SupplierAddress {
+  id            String   @id @default(uuid())
+  supplierId    String
+  province      String?
+  city          String?
+  district      String?
+  detail        String
+  shippingPlace String?
+  isDefault     Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  supplier      Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId, isDefault])
 }
 
 model Customer {
@@ -334,6 +497,7 @@ model Customer {
   companyId    String
   code         String
   name         String
+  partnerCategoryId String?
   contactName  String?
   phone        String?
   address      String?
@@ -341,7 +505,9 @@ model Customer {
   isActive     Boolean      @default(true)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
+  partnerCategory PartnerCategory? @relation(fields: [partnerCategoryId], references: [id], onDelete: SetNull)
   salesOrders  SalesOrder[]
+  salesShipments SalesShipment[]
   bills        Bill[]
 
   @@unique([companyId, code])
@@ -380,6 +546,11 @@ model PurchaseOrderLine {
   returnedQty     Decimal       @default(0) @db.Decimal(18, 6)
   unitId          String
   unitPrice       Decimal       @db.Decimal(18, 6)
+  taxExcludedPrice Decimal      @default(0) @db.Decimal(18, 6)
+  taxRate         Decimal       @default(0) @db.Decimal(5, 4)
+  supplierQuoteId String?
+  priceBasis      PurchasePriceBasis @default(TAX_INCLUDED)
+  supplierTaxRateSnapshot Decimal @default(0) @db.Decimal(5, 4)
   taxRateId       String?
   taxRateSnapshot Decimal       @default(0) @db.Decimal(5, 4)
   netAmount       Decimal       @default(0) @db.Decimal(18, 2)
@@ -391,6 +562,7 @@ model PurchaseOrderLine {
   productionDate  DateTime?     @db.Date
   expiryDate      DateTime?     @db.Date
   order           PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  supplierQuote   SupplierProductQuote? @relation(fields: [supplierQuoteId], references: [id], onDelete: SetNull)
 
   @@unique([orderId, lineNo])
 }
@@ -416,9 +588,10 @@ model SalesOrder {
   remark             String?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
-  customer           Customer         @relation(fields: [customerId], references: [id])
+  customer           Customer               @relation(fields: [customerId], references: [id])
   lines              SalesOrderLine[]
   shipments          SalesShipment[]
+  productionLinks    ProductionOrderLink[]
 }
 
 model SalesOrderLine {
@@ -495,6 +668,20 @@ model ProductionOrder {
   createdAt              DateTime               @default(now())
   materials              ProductionMaterial[]
   outputLines            ProductionOutputLine[]
+  salesOrderLinks        ProductionOrderLink[]
+}
+
+// 生产订单与销售订单多对多关联：生产单可合并多张销售单排产，明细可自由调整（不强绑定），
+// 但关联后每个产出物料的计划数量不得低于关联销售单明细的未完成数量（未发数量）。
+model ProductionOrderLink {
+  id               String          @id @default(uuid())
+  productionOrderId String
+  salesOrderId     String
+  createdAt        DateTime        @default(now())
+  productionOrder  ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  salesOrder       SalesOrder      @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+
+  @@unique([productionOrderId, salesOrderId])
 }
 
 model ProductionOutputLine {
@@ -640,12 +827,23 @@ model SalesShipment {
   documentNo     String              @unique
   companyId      String
   salesOrderId   String
+  customerId     String
+  shippedById    String?
+  shippedByName  String
   status         PostingStatus       @default(POSTED)
   shippedAt      DateTime            @default(now())
+  totalAmount    Decimal             @default(0) @db.Decimal(18, 2)
+  currencyCode   String              @default("CNY")
   idempotencyKey String              @unique
   createdAt      DateTime            @default(now())
   order          SalesOrder          @relation(fields: [salesOrderId], references: [id])
+  customer       Customer            @relation(fields: [customerId], references: [id])
+  shippedBy      User?               @relation(fields: [shippedById], references: [id], onDelete: SetNull)
   lines          SalesShipmentLine[]
+
+  @@index([companyId, shippedAt])
+  @@index([salesOrderId])
+  @@index([customerId])
 }
 
 model SalesShipmentLine {
@@ -657,6 +855,8 @@ model SalesShipmentLine {
   locationId       String
   quantity         Decimal        @db.Decimal(18, 6)
   unitId           String
+  unitPrice        Decimal        @default(0) @db.Decimal(18, 6)
+  lineAmount       Decimal        @default(0) @db.Decimal(18, 2)
   returnedQty      Decimal        @default(0) @db.Decimal(18, 6)
   shipment         SalesShipment  @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   salesOrderLine   SalesOrderLine @relation(fields: [salesOrderLineId], references: [id])
@@ -755,6 +955,7 @@ model CashFlow {
   id           String       @id @default(uuid())
   documentNo   String       @unique
   companyId    String
+  reimbursementId String?
   occurredAt   DateTime     @db.Date
   flowType     CashFlowType
   amount       Decimal      @db.Decimal(18, 2)
@@ -762,8 +963,11 @@ model CashFlow {
   description  String
   createdAt    DateTime     @default(now())
   company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  reimbursement Reimbursement? @relation(fields: [reimbursementId], references: [id], onDelete: SetNull)
 
   @@index([companyId, occurredAt])
+  @@index([reimbursementId])
+  @@unique([companyId, occurredAt, amount])
 }
 
 model Reimbursement {
@@ -777,8 +981,39 @@ model Reimbursement {
   description  String
   createdAt    DateTime @default(now())
   company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  items        ReimbursementItem[]
+  cashFlows    CashFlow[]
 
   @@index([companyId, occurredAt])
+}
+
+model ReimbursementItem {
+  id              String        @id @default(uuid())
+  reimbursementId String
+  expenseType     String
+  amount          Decimal       @db.Decimal(18, 2)
+  description     String?
+  createdAt       DateTime      @default(now())
+  reimbursement   Reimbursement @relation(fields: [reimbursementId], references: [id], onDelete: Cascade)
+  attachments     ReimbursementAttachment[]
+
+  @@index([reimbursementId])
+}
+
+model ReimbursementAttachment {
+  id                  String            @id @default(uuid())
+  reimbursementItemId String
+  originalName        String
+  objectKey           String
+  url                 String
+  mimeType            String
+  size                Int
+  storageProvider     String
+  uploadedById        String?
+  createdAt           DateTime          @default(now())
+  reimbursementItem   ReimbursementItem @relation(fields: [reimbursementItemId], references: [id], onDelete: Cascade)
+
+  @@index([reimbursementItemId])
 }
 
 model Bill {

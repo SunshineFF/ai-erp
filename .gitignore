@@ -6,4 +6,5 @@ dist/
 uploads/
 apps/api/uploads/
 apps/api/prisma/dev.db
+storage/
 outputs/**/.build/node_modules/
