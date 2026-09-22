@@ -29,5 +29,5 @@ export default defineConfig({
     ],
     exclude: ["react-native", "react-native-gesture-handler", "react-native-reanimated"],
   },
-  server: { port: 5177 },
+  server: { port: 5177, host: true },
 });

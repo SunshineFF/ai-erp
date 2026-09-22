@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Material } from "../../types";
 import { Field, Form, RemoteSelectField, SelectField } from "../../shared/CrudUi";
 import { useReferenceData } from "../../hooks/useReferenceData";
@@ -17,8 +17,12 @@ export function ProductionForm({ initial, materials, onSubmit }: { initial: any;
   const [salesOptions, setSalesOptions] = useState<[string, string][]>([]);
   const [salesKeyword, setSalesKeyword] = useState("");
   const [salesLoading, setSalesLoading] = useState(false);
-  const options = materials.filter((m) => m.isActive && !(m.parentMaterialId === null && m.variantEnabled)).map((m) => [m.id, `${m.code} · ${m.name}`]);
-  const fetchMaterialOptions = async (keyword: string) => { const items = await request<any[]>(`/materials/options?take=10${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}`); return items.filter((item: any) => item.isActive && !(item.parentMaterialId === null && item.variantEnabled)).map((item: any) => [item.id, `${item.code} · ${item.name}`]); };
+  const options = materials.filter((m) => m.isActive && !(m.parentMaterialId === null && m.variantEnabled)).map((m) => [m.id, `${m.name}`]);
+  // 物料默认单位：选择产出物料后自动带入其基本单位，无需再手动选择；远程搜索结果同样记录 baseUnitId。
+  const unitByMaterial = useRef<Record<string, string>>({});
+  const defaultUnitOf = (materialId: string) => unitByMaterial.current[materialId] ?? materials.find((m) => m.id === materialId)?.baseUnitId ?? "";
+  const unitLabel = (unitId: string) => { const unit = reference.units.find((item: any) => item.id === unitId); return unit ? `${unit.name}` : "-"; };
+  const fetchMaterialOptions = async (keyword: string) => { const items = await request<any[]>(`/materials/options?take=10${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}`); for (const item of items) if (item.baseUnitId) unitByMaterial.current[item.id] = item.baseUnitId; return items.filter((item: any) => item.isActive && !(item.parentMaterialId === null && item.variantEnabled)).map((item: any) => [item.id, `${item.name}`]); };
   const fetchSalesOptions = async (keyword: string) => { setSalesLoading(true); try { const items = await request<any[]>(`/sales-orders/options?take=10&status=${SALES_STATUS_QUERY}${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}`); setSalesOptions(items.map((item: any) => [item.id, `${item.documentNo} · ${item.customerName ?? ""}`])); } finally { setSalesLoading(false); } };
   useEffect(() => { void fetchSalesOptions(""); }, []);
   useEffect(() => { if (!salesOrderIds.length) return; let cancelled = false; const timer = setTimeout(async () => { try { const result = await request<any>(`/production-orders/sales-order-requirements`, { method: "POST", body: JSON.stringify({ salesOrderIds }) }); if (cancelled || !result.lines?.length) return; setLines(result.lines.map((line: any, index: number) => ({ key: Date.now() + index, materialId: line.materialId, plannedQty: String(line.quantity), unitId: line.unitId }))); } catch { /* 保留当前明细，提交时后端会校验 */ } }, 200); return () => { cancelled = true; clearTimeout(timer); }; }, [salesOrderIds]);
@@ -27,7 +31,7 @@ export function ProductionForm({ initial, materials, onSubmit }: { initial: any;
   const addLine = () => setLines([...lines, { key: Date.now(), materialId: "", plannedQty: "1", unitId: "" }]);
   return <Form onSubmit={() => onSubmit({ ...form, salesOrderIds: salesOrderIds.length ? salesOrderIds : undefined, lines: lines.map((line) => ({ materialId: line.materialId, plannedQty: Number(line.plannedQty), unitId: line.unitId })) })}>
     <SelectField label="生产类型" value={form.productionType} options={[["MAKE_TO_STOCK", "按库存生产"], ["MAKE_TO_ORDER", "按订单生产"]]} onChange={(v) => setForm({ ...form, productionType: v })} />
-    <SelectField label="目标库位" value={form.targetLocationId} options={reference.locations.map((item: any) => [item.id, `${item.code} · ${item.name}`])} onChange={(v) => setForm({ ...form, targetLocationId: v })} />
+    <SelectField label="目标库位" value={form.targetLocationId} options={reference.locations.map((item: any) => [item.id, `${item.name}`])} onChange={(v) => setForm({ ...form, targetLocationId: v })} />
     <Field label="计划日期" value={form.plannedDate} onChange={(v) => setForm({ ...form, plannedDate: v })} type="date" />
     <div className="line-editor">
       <div className="line-editor-header"><span>关联销售订单（可选，可多选）</span>{salesLoading && <span className="muted">加载中…</span>}</div>
@@ -44,9 +48,9 @@ export function ProductionForm({ initial, materials, onSubmit }: { initial: any;
       <div className="line-editor-header"><span>产出物料排产</span><button className="primary small" type="button" onClick={addLine}>添加物料</button></div>
       {lines.map((line, index) => <div className="order-line" key={line.key}>
         <strong>第 {index + 1} 行</strong>
-        <RemoteSelectField label="产出物料" value={line.materialId} onChange={(v) => { const material = materials.find((m) => m.id === v); updateLine(index, { materialId: v, unitId: material?.baseUnitId ?? line.unitId }); }} fetchOptions={fetchMaterialOptions} initialOptions={options} />
+        <RemoteSelectField label="产出物料" value={line.materialId} onChange={(v) => updateLine(index, { materialId: v, unitId: defaultUnitOf(v) || line.unitId })} fetchOptions={fetchMaterialOptions} initialOptions={options} />
         <Field label="计划数量" value={line.plannedQty} onChange={(v) => updateLine(index, { plannedQty: v })} />
-        <SelectField label="单位" value={line.unitId} options={reference.units.map((item: any) => [item.id, `${item.code} · ${item.name}`])} onChange={(v) => updateLine(index, { unitId: v })} />
+        <Field label="单位（物料默认）" value={unitLabel(line.unitId)} readOnly onChange={() => {}} />
         <button className="link-button danger line-remove" type="button" disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, lineIndex) => lineIndex !== index))}>移除</button>
       </div>)}
     </div>

@@ -9,16 +9,23 @@ import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 type ReceiptBody = { materialId: string; locationId: string; batchNo: string; supplierBatchNo?: string; supplierName?: string; quantity: number; unitId: string; unitCostCny: number; productionDate: string; expiryDate: string; remark?: string };
 type StockLine = { materialId: string; batchId: string; locationId: string; quantity: number; unitId: string };
 type TransferBody = StockLine & { toLocationId: string; reasonCode?: string; remark?: string };
-type StocktakeBody = Omit<StockLine, "quantity"> & { countedQty: number; reasonCode: string; remark?: string };
+type StocktakeLineBody = { materialId: string; countedQty: number; remark?: string };
+type StocktakeBody = { lines: StocktakeLineBody[]; reasonCode: string; remark?: string };
 type AdjustmentBody = StockLine & { reasonCode: string; remark?: string };
 
 @Injectable()
 export class InventoryService {
   constructor(private readonly prisma: PrismaService, private readonly posting: InventoryPostingService) {}
 
-  async balances(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryBalance.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryBalance.count()]); return pageResult(items, total, page, pageSize); }
+  async balances(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryBalance.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryBalance.count()]); const maps = await this.enrich(items); return pageResult(items.map((balance) => ({ ...balance, batch: maps.batch.get(balance.batchId), location: maps.location.get(balance.locationId), unit: maps.unit.get(balance.unitId) })), total, page, pageSize); }
   async batches(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryBatch.findMany({ orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryBatch.count()]); return pageResult(items, total, page, pageSize); }
-  async transactions(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryTransaction.findMany({ orderBy: [{ postedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryTransaction.count()]); return pageResult(items, total, page, pageSize); }
+  async transactions(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryTransaction.findMany({ orderBy: [{ postedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryTransaction.count()]); const maps = await this.enrich(items); return pageResult(items.map((transaction) => ({ ...transaction, batch: maps.batch.get(transaction.batchId), location: maps.location.get(transaction.locationId), unit: maps.unit.get(transaction.unitId) })), total, page, pageSize); }
+
+  private async enrich(rows: { batchId: string; locationId: string; unitId: string }[]) {
+    const batchIds = [...new Set(rows.map((row) => row.batchId))]; const locationIds = [...new Set(rows.map((row) => row.locationId))]; const unitIds = [...new Set(rows.map((row) => row.unitId))];
+    const [batches, locations, units] = await Promise.all([this.prisma.inventoryBatch.findMany({ where: { id: { in: batchIds } } }), this.prisma.location.findMany({ where: { id: { in: locationIds } } }), this.prisma.unit.findMany({ where: { id: { in: unitIds } } })]);
+    return { batch: new Map(batches.map((item) => [item.id, item])), location: new Map(locations.map((item) => [item.id, item])), unit: new Map(units.map((item) => [item.id, item])) };
+  }
   async costs(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.materialCost.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.materialCost.count()]); return pageResult(items, total, page, pageSize); }
   async documents(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.inventoryDocument.findMany({ include: { lines: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.inventoryDocument.count()]); return pageResult(items, total, page, pageSize); }
   async operationsBootstrap() { const [orders, sales, batches, balances, locations, materials] = await Promise.all([this.prisma.productionOrder.findMany({ where: { status: { in: ["RELEASED", "IN_PROGRESS"] } }, include: { materials: true, outputLines: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.salesOrder.findMany({ where: { status: { in: ["DRAFT", "CONFIRMED", "READY", "PARTIALLY_SHIPPED"] } }, include: { customer: true, lines: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.inventoryBatch.findMany({ orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.inventoryBalance.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "desc" }] }), this.prisma.location.findMany({ where: { isActive: true }, orderBy: { code: "asc" } }), this.prisma.material.findMany({ where: { isActive: true }, orderBy: { code: "asc" } })]); return { orders, sales, batches, balances, locations, materials }; }
@@ -71,16 +78,48 @@ export class InventoryService {
 
   async stocktake(body: StocktakeBody, idempotencyKey?: string, actorUserId?: string) {
     const key = this.requireKey(idempotencyKey);
-    if (body.countedQty < 0) throw new BadRequestException("实盘数量不能为负数");
+    if (!body.lines?.length) throw new BadRequestException("盘点明细不能为空");
+    if (body.lines.some((line) => line.countedQty < 0)) throw new BadRequestException("实盘数量不能为负数");
+    if (new Set(body.lines.map((line) => line.materialId)).size !== body.lines.length) throw new BadRequestException("同一物料不能重复盘点");
     const { company, warehouse } = await this.context();
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.inventoryDocument.findUnique({ where: { idempotencyKey: key } });
       if (existing) return existing;
-      const balance = await tx.inventoryBalance.findUnique({ where: { companyId_warehouseId_locationId_materialId_batchId_unitId: { companyId: company.id, warehouseId: warehouse.id, locationId: body.locationId, materialId: body.materialId, batchId: body.batchId, unitId: body.unitId } } });
-      const delta = body.countedQty - Number(balance?.onHandQty ?? 0);
-      const document = await tx.inventoryDocument.create({ data: { documentNo: `ST-${Date.now()}`, companyId: company.id, documentType: InventoryDocumentType.STOCKTAKE, status: "POSTED", idempotencyKey: key, reasonCode: body.reasonCode, remark: body.remark, createdById: actorUserId, postedAt: new Date(), lines: { create: [{ lineNo: 1, materialId: body.materialId, batchId: body.batchId, fromLocationId: body.locationId, quantity: Math.abs(delta), countedQty: body.countedQty, unitId: body.unitId }] } } });
-      if (delta !== 0) await this.posting.post(tx, { idempotencyKey: `${key}:POST`, companyId: company.id, warehouseId: warehouse.id, locationId: body.locationId, materialId: body.materialId, batchId: body.batchId, unitId: body.unitId, quantityDelta: delta, transactionType: delta > 0 ? InventoryTransactionType.STOCKTAKE_GAIN : InventoryTransactionType.STOCKTAKE_LOSS, sourceDocumentType: "STOCKTAKE", sourceDocumentId: document.id, reasonCode: body.reasonCode, remark: body.remark, actorUserId });
-      return document;
+      const document = await tx.inventoryDocument.create({ data: { documentNo: `ST-${Date.now()}`, companyId: company.id, documentType: InventoryDocumentType.STOCKTAKE, status: "POSTED", idempotencyKey: key, reasonCode: body.reasonCode, remark: body.remark, createdById: actorUserId, postedAt: new Date() } });
+      const posted: { lineNo: number; materialId: string; bookQty: number; countedQty: number; delta: number }[] = [];
+      for (const [index, line] of body.lines.entries()) {
+        const material = await tx.material.findUniqueOrThrow({ where: { id: line.materialId } });
+        const balances = await tx.inventoryBalance.findMany({ where: { companyId: company.id, warehouseId: warehouse.id, materialId: line.materialId } });
+        const batchMap = new Map((await tx.inventoryBatch.findMany({ where: { id: { in: [...new Set(balances.map((balance) => balance.batchId))] } } })).map((batch) => [batch.id, batch]));
+        const bookQty = balances.reduce((sum, balance) => sum + Number(balance.onHandQty), 0);
+        const delta = line.countedQty - bookQty;
+        let lineBatchId = balances[0]?.batchId ?? "";
+        if (delta < 0) {
+          // 盘亏：按“可用批次优先、先到期先出”扣减各批次余额
+          const ordered = balances.filter((balance) => Number(balance.onHandQty) > 0).sort((a, b) => { const batchA = batchMap.get(a.batchId)!; const batchB = batchMap.get(b.batchId)!; const usableA = batchA.batchStatus === BatchStatus.AVAILABLE ? 0 : 1; const usableB = batchB.batchStatus === BatchStatus.AVAILABLE ? 0 : 1; return usableA !== usableB ? usableA - usableB : batchA.expiryDate.getTime() - batchB.expiryDate.getTime(); });
+          let remaining = -delta;
+          lineBatchId = ordered[0]?.batchId ?? lineBatchId;
+          for (const balance of ordered) {
+            if (remaining <= 0.000001) break;
+            const take = Math.min(remaining, Number(balance.onHandQty));
+            await this.posting.post(tx, { idempotencyKey: `${key}:POST:${index + 1}:${balance.id}`, companyId: company.id, warehouseId: warehouse.id, locationId: balance.locationId, materialId: line.materialId, batchId: balance.batchId, unitId: balance.unitId, quantityDelta: -take, transactionType: InventoryTransactionType.STOCKTAKE_LOSS, sourceDocumentType: "STOCKTAKE", sourceDocumentId: document.id, reasonCode: body.reasonCode, remark: line.remark ?? body.remark, actorUserId });
+            remaining -= take;
+          }
+          if (remaining > 0.000001) throw new BadRequestException(`物料 ${material.code} 账面库存不足，无法完成盘亏`);
+        } else if (delta > 0) {
+          // 盘盈：差额记入专属盘点批次（成本沿用当前移动平均）
+          const locationId = material.defaultLocationId ?? (await tx.location.findFirstOrThrow({ where: { isActive: true }, orderBy: { code: "asc" } })).id;
+          const cost = await tx.materialCost.findUnique({ where: { companyId_materialId: { companyId: company.id, materialId: line.materialId } } });
+          const unitCost = Number(cost?.movingAverageCostCny ?? 0);
+          const today = new Date(); today.setHours(0, 0, 0, 0);
+          const batch = await tx.inventoryBatch.create({ data: { companyId: company.id, materialId: line.materialId, batchNo: `${document.documentNo}-${index + 1}`, productionDate: today, expiryDate: new Date(today.getTime() + (material.shelfLifeDays ?? 365) * 86400000), sourceDocumentType: "STOCKTAKE", sourceDocumentId: document.id, supplierName: "盘点盘盈", unitCostCny: unitCost } });
+          lineBatchId = batch.id;
+          await this.posting.post(tx, { idempotencyKey: `${key}:POST:${index + 1}`, companyId: company.id, warehouseId: warehouse.id, locationId, materialId: line.materialId, batchId: batch.id, unitId: material.baseUnitId, quantityDelta: delta, unitCostCny: unitCost, transactionType: InventoryTransactionType.STOCKTAKE_GAIN, sourceDocumentType: "STOCKTAKE", sourceDocumentId: document.id, reasonCode: body.reasonCode, remark: line.remark ?? body.remark, actorUserId });
+        }
+        await tx.inventoryDocumentLine.create({ data: { documentId: document.id, lineNo: index + 1, materialId: line.materialId, batchId: lineBatchId, fromLocationId: balances[0]?.locationId, quantity: Math.abs(delta), countedQty: line.countedQty, unitId: balances[0]?.unitId ?? material.baseUnitId } });
+        posted.push({ lineNo: index + 1, materialId: line.materialId, bookQty, countedQty: line.countedQty, delta });
+      }
+      return { ...document, lines: undefined, posted };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 

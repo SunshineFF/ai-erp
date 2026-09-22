@@ -4,7 +4,7 @@ import { request } from "./api";
 import { LoginPage } from "./auth/LoginPage";
 import { AppShell, canAccess, navItems } from "./layout/AppShell";
 import type { CurrentUser } from "./types";
-import { AdminPage, BomsPage, CustomersPage, DashboardPage, FinancePage, ForbiddenPage, ImportsPage, InventoryPage, MaterialsPage, NotFoundPage, OperationsPage, ProductionOrdersPage, PurchaseOrdersPage, ReportsPage, SalesOrdersPage, SettingsPage, ShipmentsPage, SuppliersPage, SupplierDetailPage } from "./pages/BusinessPages";
+import { AdminPage, BillDetailPage, BomsPage, CustomersPage, DashboardPage, FinancePage, ForbiddenPage, ImportsPage, InventoryPage, MaterialsPage, NotFoundPage, OperationsPage, ProductionOrdersPage, PurchaseOrdersPage, ReportsPage, SalesOrdersPage, SettingsPage, ShipmentsPage, SuppliersPage, SupplierDetailPage } from "./pages/BusinessPages";
 
 const pageComponents: Record<string, React.ComponentType> = { "/dashboard": DashboardPage, "/materials": MaterialsPage, "/boms": BomsPage, "/suppliers": SuppliersPage, "/customers": CustomersPage, "/purchase-orders": PurchaseOrdersPage, "/sales-orders": SalesOrdersPage, "/shipments": ShipmentsPage, "/inventory": InventoryPage, "/production-orders": ProductionOrdersPage, "/operations": OperationsPage, "/imports": ImportsPage, "/reports": ReportsPage, "/finance": FinancePage, "/admin": AdminPage, "/settings": SettingsPage };
 
@@ -26,5 +26,5 @@ export function App() {
   if (!user) return <LoginPage onLogin={setUser} />;
   const logout = () => { localStorage.removeItem("erp_token"); localStorage.removeItem("erp_user"); setUser(null); };
   const firstPath = navItems.find((item) => canAccess(user, item[3]))?.[0] ?? "/forbidden";
-  return <AppErrorBoundary><BrowserRouter><Routes><Route element={<AppShell user={user} onLogout={logout} />}><Route index element={<Navigate to={firstPath} replace />} /><Route path="/suppliers/:id" element={canAccess(user, "supplier.view") ? <SupplierDetailPage /> : <ForbiddenPage />} />{navItems.map(([path, _label, _icon, permission]) => { const Page = pageComponents[path]; return <Route key={path} path={path} element={canAccess(user, permission) ? <Page /> : <ForbiddenPage />} />; })}<Route path="forbidden" element={<ForbiddenPage />} /><Route path="*" element={<NotFoundPage />} /></Route></Routes></BrowserRouter></AppErrorBoundary>;
+  return <AppErrorBoundary><BrowserRouter><Routes><Route element={<AppShell user={user} onLogout={logout} />}><Route index element={<Navigate to={firstPath} replace />} /><Route path="/suppliers/:id" element={canAccess(user, "supplier.view") ? <SupplierDetailPage /> : <ForbiddenPage />} /><Route path="/finance/bills/:id" element={canAccess(user, "finance.view") ? <BillDetailPage /> : <ForbiddenPage />} />{navItems.map(([path, _label, _icon, permission]) => { const Page = pageComponents[path]; return <Route key={path} path={path} element={canAccess(user, permission) ? <Page /> : <ForbiddenPage />} />; })}<Route path="forbidden" element={<ForbiddenPage />} /><Route path="*" element={<NotFoundPage />} /></Route></Routes></BrowserRouter></AppErrorBoundary>;
 }

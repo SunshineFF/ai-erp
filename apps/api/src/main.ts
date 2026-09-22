@@ -18,6 +18,13 @@ async function bootstrap() {
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5177",
   ])];
+  // 局域网访问：允许本机所有 IPv4 地址的 5173/5177 端口作为来源（开发环境）
+  const os = await import("node:os");
+  for (const infos of Object.values(os.networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info.family === "IPv4" && !info.internal) allowedOrigins.push(`http://${info.address}:5173`, `http://${info.address}:5177`);
+    }
+  }
   app.enableCors({ origin: allowedOrigins, exposedHeaders: ["X-Access-Token"] });
   app.useStaticAssets(join(process.cwd(), "uploads", "materials"), { prefix: "/uploads/materials/" });
   app.useStaticAssets(resolve(process.cwd(), process.env.MEDIA_LOCAL_DIR ?? "storage/media"), { prefix: "/media/" });

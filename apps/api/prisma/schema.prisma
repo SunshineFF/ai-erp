@@ -1024,9 +1024,6 @@ model Bill {
   status             BillStatus @default(OPEN)
   supplierId         String?
   customerId         String?
-  sourceDocumentType String
-  sourceDocumentId   String
-  sourceDocumentNo   String
   billDate           DateTime   @db.Date
   dueDate            DateTime?  @db.Date
   currencyCode       String     @default("CNY")
@@ -1037,7 +1034,21 @@ model Bill {
   company            Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   supplier           Supplier?  @relation(fields: [supplierId], references: [id])
   customer           Customer?  @relation(fields: [customerId], references: [id])
+  lines               BillLine[]
 
-  @@unique([sourceDocumentType, sourceDocumentId])
   @@index([companyId, billType, status])
+}
+
+model BillLine {
+  id                String   @id @default(uuid())
+  billId            String
+  orderId           String
+  documentNo        String
+  orderDate         DateTime @db.Date
+  amount            Decimal  @db.Decimal(18, 2)
+  createdAt         DateTime @default(now())
+  bill              Bill     @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@unique([billId, orderId])
+  @@index([orderId])
 }

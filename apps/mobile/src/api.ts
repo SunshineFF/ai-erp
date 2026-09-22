@@ -1,4 +1,4 @@
-const API = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:3030/api";
+const API = import.meta.env.VITE_API_URL ?? `${location.protocol}//${location.hostname}:3030/api`;
 export type PageResult<T> = { items: T[]; total: number; page: number; pageSize: number; totalPages: number };
 export function pageItems<T>(value: PageResult<T> | T[]) { return Array.isArray(value) ? value : value.items; }
 

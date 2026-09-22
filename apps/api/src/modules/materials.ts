@@ -80,6 +80,7 @@ export class MaterialsService {
   }
 
   async create(body: CreateMaterialBody) {
+    if (!body.baseUnitId?.trim()) throw new BadRequestException("请选择基础单位");
     const company = await this.prisma.company.findFirstOrThrow();
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = await this.nextCode(body.categoryId);
@@ -136,7 +137,7 @@ export class MaterialsService {
 
   variants(id: string) { return (this.prisma as any).material.findUniqueOrThrow({ where: { id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } } } }); }
 
-  async update(id: string, body: Partial<CreateMaterialBody>) { const { code: _code, variantEnabled, attributes, ...data } = body; const updated = await this.prisma.material.update({ where: { id }, data: data as any }); if (variantEnabled && attributes?.length) await this.addMissingVariants(id, attributes); return updated; }
+  async update(id: string, body: Partial<CreateMaterialBody>) { const { code: _code, variantEnabled, attributes, ...data } = body; if (data.baseUnitId !== undefined && !String(data.baseUnitId).trim()) throw new BadRequestException("请选择基础单位"); const updated = await this.prisma.material.update({ where: { id }, data: data as any }); if (variantEnabled && attributes?.length) await this.addMissingVariants(id, attributes); return updated; }
   async remove(id: string) {
     const current: any = ensureFound(await (this.prisma as any).material.findUnique({ where: { id } }), "物料不存在");
     const [purchaseLines, salesLines, bomItems, boms, productionLines, batches, variants] = await Promise.all([

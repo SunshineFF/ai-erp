@@ -46,7 +46,7 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
     }
   }, [initialOrderId, sales]);
 
-  const eligibleOrders = sales.filter((order) => ["CONFIRMED", "READY", "IN_PRODUCTION", "PARTIALLY_SHIPPED"].includes(order.status));
+  const eligibleOrders = sales.filter((order) => ["DRAFT", "CONFIRMED", "READY", "IN_PRODUCTION", "PARTIALLY_SHIPPED"].includes(order.status));
   const filteredShipments = shipmentResource.items;
   const order = selectedOrder ?? sales.find((item) => item.id === selectedId);
   const remainingLines = order?.lines?.filter((line: any) => Number(line.shippedQty) < Number(line.quantity) - 0.000001) ?? [];
@@ -84,14 +84,14 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
       {(error || shipmentResource.error) && <div className="error banner">{error || shipmentResource.error}</div>}
       <div className="table-scroll">
         <table>
-          <thead><tr><th>出库单号</th><th>出库人</th><th>目标客户</th><th>出库时间</th><th>累计金额</th><th>关联销售单</th><th>物料行</th><th>创建日期</th><th>操作</th></tr></thead>
+          <thead><tr><th>出库单号</th><th>出库人</th><th>目标客户</th><th>出库时间</th><th>累计金额</th><th>关联销售单</th><th>物料行</th><th>状态</th><th>创建日期</th><th>操作</th></tr></thead>
           {filteredShipments.map((shipment) => (
             <tbody key={shipment.id} className="shipment-row-group">
               <tr>
-                <td>{shipment.documentNo}</td><td>{shipment.shippedByName || shipment.shippedBy?.displayName || "系统"}</td><td>{shipment.customer?.name ?? shipment.order?.customer?.name ?? "-"}</td><td>{new Date(shipment.shippedAt).toLocaleString()}</td><td>{Number(shipment.totalAmount).toFixed(2)} {shipment.currencyCode}</td><td>{shipment.order?.documentNo ?? "-"}</td><td>{shipment.lines?.length ?? 0}</td><td>{new Date(shipment.createdAt).toLocaleDateString()}</td>
+                <td>{shipment.documentNo}</td><td>{shipment.shippedByName || shipment.shippedBy?.displayName || "系统"}</td><td>{shipment.customer?.name ?? shipment.order?.customer?.name ?? "-"}</td><td>{new Date(shipment.shippedAt).toLocaleString()}</td><td>{Number(shipment.totalAmount).toFixed(2)} {shipment.currencyCode}</td><td>{shipment.order?.documentNo ?? "-"}</td><td>{shipment.lines?.length ?? 0}</td><td><span className={"status-badge " + shipmentStatusClass(shipment.status)}>{shipmentStatusLabel(shipment.status)}</span></td><td>{new Date(shipment.createdAt).toLocaleDateString()}</td>
                 <td><span className="actions"><button className="link-button icon-text" onClick={() => setExpanded(expanded === shipment.id ? null : shipment.id)}>{expanded === shipment.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}查看</button><button className="link-button danger" onClick={() => setDeleteShipment(shipment)}>删除</button></span></td>
               </tr>
-              {expanded === shipment.id && <tr><td colSpan={9}><div className="shipment-details">{shipment.lines?.map((line: any) => <div className="shipment-detail-row" key={line.id}><span>{materialName(materials, line.materialId)}</span><span>数量 {Number(line.quantity)} · 单价 {Number(line.unitPrice).toFixed(2)}</span><strong>{Number(line.lineAmount).toFixed(2)} {shipment.currencyCode}</strong></div>)}</div></td></tr>}
+              {expanded === shipment.id && <tr><td colSpan={10}><div className="shipment-details">{shipment.lines?.map((line: any) => <div className="shipment-detail-row" key={line.id}><span>{materialName(materials, line.materialId)}</span><span>数量 {Number(line.quantity)} · 单价 {Number(line.unitPrice).toFixed(2)}</span><strong>{Number(line.lineAmount).toFixed(2)} {shipment.currencyCode}</strong></div>)}</div></td></tr>}
             </tbody>
           ))}
         </table>
@@ -103,7 +103,7 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
         <div className="modal-backdrop"><div className="modal shipment-modal">
           <div className="modal-header"><h2>创建出库单</h2><button className="icon-button" type="button" onClick={() => setCreating(false)}><X size={18} /></button></div>
           <div className="shipment-form">
-            <RemoteSelectField label="关联销售单" value={selectedId} onChange={(v) => { setSelectedId(v); setPicks({}); setSelectedOrder(null); if (v) { void api<any>(`/sales-orders/${v}`).then((detail) => setSelectedOrder(detail)).catch(() => setSelectedOrder(null)); } }} fetchOptions={async (keyword: string) => { const items = await api<any[]>(`/sales-orders/options?take=10&status=CONFIRMED,READY,IN_PRODUCTION,PARTIALLY_SHIPPED${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}`); return items.map((item) => [item.id, `${item.customer?.name ?? "客户"} · ${item.documentNo}`]); }} initialOptions={eligibleOrders.map((item) => [item.id, `${item.customer?.name ?? "客户"} · ${item.documentNo}`])} />
+            <RemoteSelectField label="关联销售单" value={selectedId} onChange={(v) => { setSelectedId(v); setPicks({}); setSelectedOrder(null); if (v) { void api<any>(`/sales-orders/${v}`).then((detail) => setSelectedOrder(detail)).catch(() => setSelectedOrder(null)); } }} fetchOptions={async (keyword: string) => { const items = await api<any[]>(`/sales-orders/options?take=10&status=DRAFT,CONFIRMED,READY,IN_PRODUCTION,PARTIALLY_SHIPPED${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}`); return items.map((item) => [item.id, `${item.customer?.name ?? "客户"} · ${item.documentNo}`]); }} initialOptions={eligibleOrders.map((item) => [item.id, `${item.customer?.name ?? "客户"} · ${item.documentNo}`])} />
             <label>出库时间<input type="datetime-local" value={shippedAt} onChange={(event) => setShippedAt(event.target.value)} /></label>
             {order && <div className="shipment-summary"><span>目标客户：<strong>{order.customer?.name}</strong></span><span>关联销售单：<strong>{order.documentNo}</strong></span></div>}
             {remainingLines.map((line: any) => {
@@ -122,3 +122,5 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
 }
 
 function materialName(materials: Material[], id: string) { return materials.find((item) => item.id === id)?.name ?? "物料"; }
+function shipmentStatusLabel(status?: string) { if (status === "POSTED") return "已出库"; if (status === "REVERSED") return "已冲销"; if (status === "CANCELLED") return "已取消"; if (status === "DRAFT") return "待出库"; return status ?? "-"; }
+function shipmentStatusClass(status?: string) { if (status === "POSTED") return "status-shipped"; if (status === "REVERSED" || status === "CANCELLED") return "status-muted"; return "status-muted"; }
