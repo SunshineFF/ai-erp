@@ -4,7 +4,6 @@ import { ArrowLeft, FileText } from "lucide-react";
 import { request } from "../api";
 
 const billTypeLabels: Record<string, string> = { RECEIVABLE: "应收", PAYABLE: "应付" };
-const billStatusLabels: Record<string, string> = { OPEN: "待结算", SETTLED: "已结算", VOIDED: "已作废" };
 const statusBadgeClass: Record<string, string> = { OPEN: "status-badge status-muted", SETTLED: "status-badge status-shipped", VOIDED: "status-badge status-muted" };
 
 export function BillDetailPage() {
@@ -18,7 +17,7 @@ export function BillDetailPage() {
   const title = bill ? `${bill.billNo}（${billTypeLabels[bill.billType] ?? bill.billType}）` : "账单详情";
   return <section className="panel table-panel bill-detail-panel">
     <button className="ghost-action" onClick={() => navigate("/finance")}><ArrowLeft size={15} />返回财务</button>
-    <div className="panel-title"><FileText size={18} /><h2>{title}</h2>{bill && <span className={statusBadgeClass[bill.status] ?? "status-badge status-muted"}>{billStatusLabels[bill.status] ?? bill.status}</span>}</div>
+    <div className="panel-title"><FileText size={18} /><h2>{title}</h2>{bill && <span className={statusBadgeClass[bill.status] ?? "status-badge status-muted"}>{bill.status_text ?? bill.status}</span>}</div>
     {error && <div className="error banner">{error}</div>}
     {!bill && !error && <div className="empty">加载中...</div>}
     {bill && <>

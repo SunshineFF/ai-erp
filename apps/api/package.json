@@ -6,7 +6,7 @@
     "build": "nest build",
     "start": "node dist/src/main.js",
     "start:dev": "nest start --watch",
-    "test": "npm run build && node --test test/domain.test.js test/auth.test.js test/security.test.js test/pagination.test.js test/shipment.test.js test/sales-ship-status.test.js test/finance-import.test.js test/settings-delete.test.js test/media-delete.test.js test/material-code.test.js test/partner-code.test.js test/purchase-quote.test.js test/purchase-complete.test.js test/production-create.test.js test/bom-create.test.js",
+    "test": "npm run build && node --test test/domain.test.js test/auth.test.js test/security.test.js test/pagination.test.js test/shipment.test.js test/sales-ship-status.test.js test/finance-import.test.js test/settings-delete.test.js test/media-delete.test.js test/material-code.test.js test/partner-code.test.js test/purchase-quote.test.js test/purchase-complete.test.js test/production-create.test.js test/production-complete.test.js test/bom-create.test.js",
     "test:smoke": "npm run build && node test/smoke.js",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",

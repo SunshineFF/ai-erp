@@ -1,5 +1,6 @@
 import { Controller, Get, Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma.service";
+import { withBatchStatusText } from "../status-text";
 
 @Injectable()
 export class DashboardService {
@@ -12,7 +13,7 @@ export class DashboardService {
       this.prisma.inventoryBalance.count({ where: { availableQty: { lte: 0 } } }),
     ]);
     const expiring = await this.prisma.inventoryBatch.findMany({ where: { expiryDate: { lte: new Date(Date.now() + 30 * 86400000) }, batchStatus: "AVAILABLE" }, take: 8, orderBy: { expiryDate: "asc" } });
-    return { metrics: { materialCount, availableBatchCount: batchCount, openProductionOrders: productionOpen, emptyBalances: lowStock }, expiringBatches: expiring };
+    return { metrics: { materialCount, availableBatchCount: batchCount, openProductionOrders: productionOpen, emptyBalances: lowStock }, expiringBatches: expiring.map(withBatchStatusText) };
   }
 }
 

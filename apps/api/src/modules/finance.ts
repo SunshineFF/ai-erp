@@ -6,6 +6,7 @@ import { PrismaService } from "../prisma.service";
 import { Permissions } from "../security";
 import { MediaStorageService } from "../media/media.service";
 import { createdAtFilter, PaginationQuery, pageResult, parsePagination } from "../pagination";
+import { billText } from "../status-text";
 import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 
 type CashFlowBody = { occurredAt: string; flowType: CashFlowType; amount: number; currencyCode?: string; description: string };
@@ -181,8 +182,8 @@ export class FinanceService {
     await this.media.withRemoved({ key: attachment.objectKey, url: attachment.url, provider: attachment.storageProvider }, () => this.prisma.reimbursementAttachment.delete({ where: { id: attachment.id } }));
     return { ok: true };
   }
-  async bills(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const partner = query.partnerId?.split(":"); const where: any = { ...(createdAtFilter(query) ? { createdAt: createdAtFilter(query) } : {}), ...(partner?.[0] === "customer" ? { customerId: partner[1] } : partner?.[0] === "supplier" ? { supplierId: partner[1] } : {}) }; const [items, total] = await Promise.all([this.prisma.bill.findMany({ where, include: this.billInclude, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.bill.count({ where })]); return pageResult(items, total, page, pageSize); }
-  bill(id: string) { return this.prisma.bill.findUniqueOrThrow({ where: { id }, include: this.billInclude }); }
+  async bills(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const partner = query.partnerId?.split(":"); const where: any = { ...(createdAtFilter(query) ? { createdAt: createdAtFilter(query) } : {}), ...(partner?.[0] === "customer" ? { customerId: partner[1] } : partner?.[0] === "supplier" ? { supplierId: partner[1] } : {}) }; const [items, total] = await Promise.all([this.prisma.bill.findMany({ where, include: this.billInclude, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.bill.count({ where })]); return pageResult(items.map(billText), total, page, pageSize); }
+  bill(id: string) { return this.prisma.bill.findUniqueOrThrow({ where: { id }, include: this.billInclude }).then(billText); }
   async billCandidates() { const existing = await this.prisma.billLine.findMany({ select: { orderId: true } }); const orderIds = existing.map((line) => line.orderId); const [purchases, sales] = await Promise.all([this.prisma.purchaseOrder.findMany({ where: { id: { notIn: orderIds } }, select: { id: true, documentNo: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }), this.prisma.salesOrder.findMany({ where: { id: { notIn: orderIds } }, select: { id: true, documentNo: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] })]); return { purchases, sales }; }
   async removeCashFlow(id: string) { const row = ensureFound(await this.prisma.cashFlow.findUnique({ where: { id } }), "现金流水不存在"); if (row.reimbursementId) deleteConflict("该流水由报销单生成，不能单独删除", [{ resource: "报销单", count: 1 }]); await this.prisma.cashFlow.delete({ where: { id } }); return deleted(id); }
   async removeReimbursement(id: string) { const row = ensureFound(await this.prisma.reimbursement.findUnique({ where: { id }, include: { items: { include: { attachments: true } } } }), "报销单不存在"); const attachments = row.items.flatMap((item) => item.attachments); const removeAt = (index: number): Promise<unknown> => index >= attachments.length ? this.prisma.$transaction(async (tx) => { await tx.cashFlow.deleteMany({ where: { reimbursementId: id } }); await tx.reimbursementItem.deleteMany({ where: { reimbursementId: id } }); await tx.reimbursement.delete({ where: { id } }); }) : this.media.withRemoved({ key: attachments[index].objectKey, url: attachments[index].url, provider: attachments[index].storageProvider }, () => removeAt(index + 1)); await removeAt(0); return deleted(id); }
@@ -196,14 +197,14 @@ export class FinanceService {
     else for (const order of await this.prisma.salesOrder.findMany({ where: { id: { in: orderIds } } })) orders.push({ id: order.id, documentNo: order.documentNo, orderDate: order.orderDate, currencyCode: order.currencyCode, totalAmount: order.totalAmount, partnerId: order.customerId, companyId: order.companyId });
     if (orders.length !== orderIds.length) throw new BadRequestException("部分订单不存在");
     const pending = orders.filter((order) => !billedOrderIds.has(order.id));
-    if (!pending.length) { const billIds = [...new Set(billed.map((line) => line.billId))]; return this.prisma.bill.findMany({ where: { id: { in: billIds } }, include: this.billInclude }); }
+    if (!pending.length) { const billIds = [...new Set(billed.map((line) => line.billId))]; return this.prisma.bill.findMany({ where: { id: { in: billIds } }, include: this.billInclude }).then((rows) => rows.map(billText)); }
     const partnerIds = new Set(pending.map((order) => order.partnerId));
     if (partnerIds.size > 1) throw new BadRequestException(kind === "PURCHASE" ? "一个账单只能包含同一供应商的采购订单" : "一个账单只能包含同一客户的销售订单");
     const currencyCodes = new Set(pending.map((order) => order.currencyCode));
     if (currencyCodes.size > 1) throw new BadRequestException("一个账单只能包含同一币种的订单");
     const amount = pending.reduce((sum, order) => sum + Number(order.totalAmount), 0);
     const billDate = pending.reduce((earliest, order) => (order.orderDate < earliest ? order.orderDate : earliest), pending[0].orderDate);
-    return [await this.prisma.bill.create({ data: { billNo: `${kind === "PURCHASE" ? "BILL-P" : "BILL-S"}-${Date.now()}`, companyId: pending[0].companyId, billType: kind === "PURCHASE" ? BillType.PAYABLE : BillType.RECEIVABLE, ...(kind === "PURCHASE" ? { supplierId: pending[0].partnerId } : { customerId: pending[0].partnerId }), billDate, currencyCode: pending[0].currencyCode, amount, description: `${kind === "PURCHASE" ? "采购订单" : "销售订单"} ${pending.map((order) => order.documentNo).join("、")}`, lines: { create: pending.map((order) => ({ orderId: order.id, documentNo: order.documentNo, orderDate: order.orderDate, amount: order.totalAmount })) } }, include: this.billInclude })];
+    return [await this.prisma.bill.create({ data: { billNo: `${kind === "PURCHASE" ? "BILL-P" : "BILL-S"}-${Date.now()}`, companyId: pending[0].companyId, billType: kind === "PURCHASE" ? BillType.PAYABLE : BillType.RECEIVABLE, ...(kind === "PURCHASE" ? { supplierId: pending[0].partnerId } : { customerId: pending[0].partnerId }), billDate, currencyCode: pending[0].currencyCode, amount, description: `${kind === "PURCHASE" ? "采购订单" : "销售订单"} ${pending.map((order) => order.documentNo).join("、")}`, lines: { create: pending.map((order) => ({ orderId: order.id, documentNo: order.documentNo, orderDate: order.orderDate, amount: order.totalAmount })) } }, include: this.billInclude })].map(billText);
   }
   async createPurchaseBill(orderId: string) { return (await this.createMergedBill("PURCHASE", [orderId]))[0]; }
   async createSalesBill(orderId: string) { return (await this.createMergedBill("SALES", [orderId]))[0]; }
@@ -215,7 +216,7 @@ export class FinanceService {
     const salesBills = salesIds.length ? await this.createMergedBill("SALES", salesIds) : [];
     return { purchaseBills, salesBills };
   }
-  updateBill(id: string, body: { status?: BillStatus; dueDate?: string }) { return this.prisma.bill.update({ where: { id }, data: { status: body.status, dueDate: body.dueDate ? new Date(body.dueDate) : undefined }, include: this.billInclude }); }
+  updateBill(id: string, body: { status?: BillStatus; dueDate?: string }) { return this.prisma.bill.update({ where: { id }, data: { status: body.status, dueDate: body.dueDate ? new Date(body.dueDate) : undefined }, include: this.billInclude }).then(billText); }
 }
 
 @Controller("finance")

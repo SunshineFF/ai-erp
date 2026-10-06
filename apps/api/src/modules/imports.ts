@@ -10,6 +10,7 @@ import { PrismaService } from "../prisma.service";
 import { Permissions } from "../security";
 import { InventoryPostingService } from "./posting";
 import { PaginationQuery, pageResult, parsePagination } from "../pagination";
+import { importTaskText } from "../status-text";
 import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 
 type UploadedDocument = { originalname: string; mimetype: string; size: number; buffer: Buffer };
@@ -26,8 +27,8 @@ const readXlsxFile = readExcelModule.default;
 export class ImportsService {
   constructor(private readonly prisma: PrismaService, private readonly posting: InventoryPostingService) {}
 
-  async list(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.importTask.findMany({ include: { file: true, items: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.importTask.count()]); return pageResult(items, total, page, pageSize); }
-  get(id: string) { return this.prisma.importTask.findUniqueOrThrow({ where: { id }, include: { file: true, items: true } }); }
+  async list(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const [items, total] = await Promise.all([this.prisma.importTask.findMany({ include: { file: true, items: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.importTask.count()]); return pageResult(items.map(importTaskText), total, page, pageSize); }
+  get(id: string) { return this.prisma.importTask.findUniqueOrThrow({ where: { id }, include: { file: true, items: true } }).then(importTaskText); }
   async remove(id: string) { const task = ensureFound(await this.prisma.importTask.findUnique({ where: { id }, include: { file: true } }), "导入任务不存在"); if (task.status === "CONFIRMED") deleteConflict(`导入任务“${task.file.originalName}”已确认，无法删除`, [{ resource: "已确认导入", count: 1 }]); const filePath = join(process.cwd(), task.file.storagePath); const backup = await readFile(filePath); await unlink(filePath); try { await this.prisma.$transaction(async (tx) => { await tx.importTaskItem.deleteMany({ where: { importTaskId: id } }); await tx.importTask.delete({ where: { id } }); await tx.documentFile.delete({ where: { id: task.documentFileId } }); }); } catch (error) { await mkdir(dirname(filePath), { recursive: true }); await writeFile(filePath, backup); throw error; } return deleted(id); }
   async file(id: string, actorUserId?: string) { const task = await this.prisma.importTask.findUniqueOrThrow({ where: { id }, include: { file: true } }); await this.prisma.auditLog.create({ data: { companyId: task.companyId, actorUserId, action: "import.file_download", resourceType: "DocumentFile", resourceId: task.file.id } }); return { ...task.file, absolutePath: join(process.cwd(), task.file.storagePath) }; }
 
@@ -75,7 +76,7 @@ export class ImportsService {
       const document = await tx.documentFile.create({ data: { companyId: company.id, originalName, storedName, mimeType: file.mimetype, size: file.size, storagePath: join("storage", "imports", storedName), uploadedById: actorUserId } });
       const task = await tx.importTask.create({ data: { companyId: company.id, documentFileId: document.id, targetType: targetType || "AUTO", status: errorMessage ? ImportTaskStatus.FAILED : ImportTaskStatus.NEEDS_REVIEW, errorMessage, items: { create: items.map((item) => ({ sheetName: item.sheetName, rowNo: item.rowNo, parsedData: item.parsedData as Prisma.InputJsonValue, confidence: item.confidence, needsConfirmation: item.needsConfirmation, validationErrors: item.validationErrors as Prisma.InputJsonValue })) } }, include: { file: true, items: true } });
       await this.posting.audit(tx, company.id, actorUserId, "import.upload", "ImportTask", task.id, { targetType: task.targetType, itemCount: items.length });
-      return task;
+      return importTaskText(task);
     });
   }
 
@@ -91,7 +92,7 @@ export class ImportsService {
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.importTask.update({ where: { id }, data: { status: "CONFIRMED", fieldMapping: fieldMapping as Prisma.InputJsonValue, confirmedById: actorUserId, confirmedAt: new Date(), draftDocumentNo }, include: { file: true, items: true } });
       await this.posting.audit(tx, task.companyId, actorUserId, "import.confirm", "ImportTask", task.id, { draftDocumentNo });
-      return updated;
+      return importTaskText(updated);
     });
   }
 }

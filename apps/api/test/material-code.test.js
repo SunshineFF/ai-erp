@@ -72,7 +72,7 @@ test("物料主数据列表不返回多属性产品的 SKU", async () => {
     },
   };
   const result = await new MaterialsService(prisma, {}).list({ q: "产品" });
-  assert.deepEqual(result, { items: [{ id: "parent-1", parentMaterialId: null }], total: 1, page: 1, pageSize: 20, totalPages: 1 });
+  assert.deepEqual(result, { items: [{ id: "parent-1", parentMaterialId: null, material_type_text: "" }], total: 1, page: 1, pageSize: 20, totalPages: 1 });
   assert.deepEqual(calls.map((call) => call.args.where), [
     { parentMaterialId: null, OR: [{ code: { contains: "产品", mode: "insensitive" } }, { name: { contains: "产品", mode: "insensitive" } }] },
     { parentMaterialId: null, OR: [{ code: { contains: "产品", mode: "insensitive" } }, { name: { contains: "产品", mode: "insensitive" } }] },

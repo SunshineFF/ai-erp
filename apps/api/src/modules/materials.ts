@@ -9,6 +9,7 @@ import { Permissions } from "../security";
 import { MediaStorageService } from "../media/media.service";
 import { PaginationQuery, pageResult, parsePagination } from "../pagination";
 import { deleteConflict, deleted, ensureFound } from "../delete-errors";
+import { materialText } from "../status-text";
 
 type AttributeSelection = { attributeId: string; valueIds: string[] };
 type CreateMaterialBody = { code?: string; name: string; materialType: MaterialType; baseUnitId: string; categoryId: string; shelfLifeDays?: number; expiryWarningDays?: number; purchasable?: boolean; saleable?: boolean; manufacturable?: boolean; defaultLocationId?: string; defaultTaxRateId?: string; variantEnabled?: boolean; attributes?: AttributeSelection[] };
@@ -44,7 +45,7 @@ export class MaterialsService {
       ...(query.q ? { OR: [{ code: { contains: query.q, mode: "insensitive" } }, { name: { contains: query.q, mode: "insensitive" } }] } : {}),
     };
     const [items, total] = await Promise.all([this.prisma.material.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.material.count({ where })]);
-    return pageResult(items, total, page, pageSize);
+    return pageResult(items.map(materialText), total, page, pageSize);
   }
 
   async bootstrapData() {
@@ -56,7 +57,7 @@ export class MaterialsService {
       this.prisma.currency.findMany({ where: { isActive: true }, orderBy: { code: "asc" } }),
       (this.prisma as any).material.findMany({ where: { isActive: true }, include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } }, orderBy: { code: "asc" } }),
     ]);
-    return { units, categories, locations, taxRates, currencies, materials };
+    return { units, categories, locations, taxRates, currencies, materials: materials.map(materialText) };
   }
 
   async options(q?: string, take?: string, topLevel?: string) {
@@ -97,7 +98,7 @@ export class MaterialsService {
             const sku = await tx.material.create({ data: { companyId: company.id, code: `${parent.code}-${suffix}`, name: `${parent.name} · ${values.map((value: any) => value.name).join(" · ")}`, parentMaterialId: parent.id, categoryId: parent.categoryId, materialType: parent.materialType, baseUnitId: parent.baseUnitId, shelfLifeDays: parent.shelfLifeDays, expiryWarningDays: parent.expiryWarningDays, purchasable: body.purchasable ?? false, saleable: body.saleable ?? false, manufacturable: body.manufacturable ?? false, defaultLocationId: parent.defaultLocationId, defaultTaxRateId: parent.defaultTaxRateId } });
             await tx.materialVariantValue.createMany({ data: values.map((value) => ({ materialId: sku.id, attributeValueId: value.id })) });
           }
-          return tx.material.findUniqueOrThrow({ where: { id: parent.id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } }, attributes: true } });
+          return materialText(await tx.material.findUniqueOrThrow({ where: { id: parent.id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } } }, attributes: true }));
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       } catch (error) {
         if ((error as any)?.code !== "P2002" || attempt === 4) throw error;
@@ -135,9 +136,9 @@ export class MaterialsService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  variants(id: string) { return (this.prisma as any).material.findUniqueOrThrow({ where: { id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } } } }); }
+  variants(id: string) { return (this.prisma as any).material.findUniqueOrThrow({ where: { id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } } } }).then((parent: any) => ({ ...parent, variants: parent.variants.map(materialText) })); }
 
-  async update(id: string, body: Partial<CreateMaterialBody>) { const { code: _code, variantEnabled, attributes, ...data } = body; if (data.baseUnitId !== undefined && !String(data.baseUnitId).trim()) throw new BadRequestException("请选择基础单位"); const updated = await this.prisma.material.update({ where: { id }, data: data as any }); if (variantEnabled && attributes?.length) await this.addMissingVariants(id, attributes); return updated; }
+  async update(id: string, body: Partial<CreateMaterialBody>) { const { code: _code, variantEnabled, attributes, ...data } = body; if (data.baseUnitId !== undefined && !String(data.baseUnitId).trim()) throw new BadRequestException("请选择基础单位"); const updated = await this.prisma.material.update({ where: { id }, data: data as any }); if (variantEnabled && attributes?.length) await this.addMissingVariants(id, attributes); return materialText(updated); }
   async remove(id: string) {
     const current: any = ensureFound(await (this.prisma as any).material.findUnique({ where: { id } }), "物料不存在");
     const [purchaseLines, salesLines, bomItems, boms, productionLines, batches, variants] = await Promise.all([

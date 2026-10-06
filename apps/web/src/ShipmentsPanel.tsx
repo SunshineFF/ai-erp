@@ -51,7 +51,7 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
   const order = selectedOrder ?? sales.find((item) => item.id === selectedId);
   const remainingLines = order?.lines?.filter((line: any) => Number(line.shippedQty) < Number(line.quantity) - 0.000001) ?? [];
   const stockFor = (materialId: string) => balances.filter((balance) => balance.materialId === materialId && Number(balance.availableQty) > 0).map((balance) => ({ ...balance, batch: batches.find((batch) => batch.id === balance.batchId), location: locations.find((location) => location.id === balance.locationId) }));
-  const pickFor = (line: any): Pick => picks[line.id] ?? { stockKey: "", quantity: String(Number(line.quantity) - Number(line.shippedQty)) };
+  const pickFor = (line: any): Pick => { const existing = picks[line.id]; if (existing) return existing; const quantity = String(Number(line.quantity) - Number(line.shippedQty)); const stocks = stockFor(line.materialId); const stockKey = stocks.length === 1 ? `${stocks[0].batchId}:${stocks[0].locationId}` : ""; return { stockKey, quantity }; };
   const estimatedAmount = useMemo(() => remainingLines.reduce((sum: number, line: any) => sum + (Number(line.grossAmount) || Number(line.unitPrice) * Number(line.quantity)) * (Number(pickFor(line).quantity) || 0) / Number(line.quantity), 0), [remainingLines, picks]);
 
   const createShipment = async () => {
@@ -88,7 +88,7 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
           {filteredShipments.map((shipment) => (
             <tbody key={shipment.id} className="shipment-row-group">
               <tr>
-                <td>{shipment.documentNo}</td><td>{shipment.shippedByName || shipment.shippedBy?.displayName || "系统"}</td><td>{shipment.customer?.name ?? shipment.order?.customer?.name ?? "-"}</td><td>{new Date(shipment.shippedAt).toLocaleString()}</td><td>{Number(shipment.totalAmount).toFixed(2)} {shipment.currencyCode}</td><td>{shipment.order?.documentNo ?? "-"}</td><td>{shipment.lines?.length ?? 0}</td><td><span className={"status-badge " + shipmentStatusClass(shipment.status)}>{shipmentStatusLabel(shipment.status)}</span></td><td>{new Date(shipment.createdAt).toLocaleDateString()}</td>
+                <td>{shipment.documentNo}</td><td>{shipment.shippedByName || shipment.shippedBy?.displayName || "系统"}</td><td>{shipment.customer?.name ?? shipment.order?.customer?.name ?? "-"}</td><td>{new Date(shipment.shippedAt).toLocaleString()}</td><td>{Number(shipment.totalAmount).toFixed(2)} {shipment.currencyCode}</td><td>{shipment.order?.documentNo ?? "-"}</td><td>{shipment.lines?.length ?? 0}</td><td><span className={"status-badge " + shipmentStatusClass(shipment.status)}>{shipment.status_text ?? shipment.status}</span></td><td>{new Date(shipment.createdAt).toLocaleDateString()}</td>
                 <td><span className="actions"><button className="link-button icon-text" onClick={() => setExpanded(expanded === shipment.id ? null : shipment.id)}>{expanded === shipment.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}查看</button><button className="link-button danger" onClick={() => setDeleteShipment(shipment)}>删除</button></span></td>
               </tr>
               {expanded === shipment.id && <tr><td colSpan={10}><div className="shipment-details">{shipment.lines?.map((line: any) => <div className="shipment-detail-row" key={line.id}><span>{materialName(materials, line.materialId)}</span><span>数量 {Number(line.quantity)} · 单价 {Number(line.unitPrice).toFixed(2)}</span><strong>{Number(line.lineAmount).toFixed(2)} {shipment.currencyCode}</strong></div>)}</div></td></tr>}
@@ -122,5 +122,4 @@ export function ShipmentsPanel({ customers, materials, initialOrderId, onInitial
 }
 
 function materialName(materials: Material[], id: string) { return materials.find((item) => item.id === id)?.name ?? "物料"; }
-function shipmentStatusLabel(status?: string) { if (status === "POSTED") return "已出库"; if (status === "REVERSED") return "已冲销"; if (status === "CANCELLED") return "已取消"; if (status === "DRAFT") return "待出库"; return status ?? "-"; }
 function shipmentStatusClass(status?: string) { if (status === "POSTED") return "status-shipped"; if (status === "REVERSED" || status === "CANCELLED") return "status-muted"; return "status-muted"; }

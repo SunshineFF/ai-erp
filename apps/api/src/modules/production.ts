@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma.service";
 import { Permissions } from "../security";
 import { InventoryPostingService } from "./posting";
 import { PaginationQuery, pageResult, parsePagination, createdAtFilter } from "../pagination";
+import { productionOrderText } from "../status-text";
 import { deleteConflict, deleted, ensureFound } from "../delete-errors";
 
 type ProductionOutputInput = { materialId: string; plannedQty: number; unitId: string };
@@ -28,7 +29,7 @@ const LINKABLE_SALES_STATUSES: SalesOrderStatus[] = ["DRAFT", "CONFIRMED", "IN_P
 export class ProductionService {
   constructor(private readonly prisma: PrismaService, private readonly posting: InventoryPostingService) {}
 
-  async list(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const salesOrderIds = query.partnerId ? (await this.prisma.salesOrder.findMany({ where: { customerId: query.partnerId }, select: { id: true } })).map((item) => item.id) : undefined; const where: any = { ...(createdAtFilter(query) ? { createdAt: createdAtFilter(query) } : {}), ...(query.status ? { status: query.status } : {}), ...(salesOrderIds ? { sourceSalesOrderId: { in: salesOrderIds } } : {}) }; const [items, total] = await Promise.all([this.prisma.productionOrder.findMany({ where, include: { materials: true, outputLines: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true, customerId: true } } } } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.productionOrder.count({ where })]); return pageResult(items, total, page, pageSize); }
+  async list(query: PaginationQuery = {}) { const { page, pageSize, skip, take } = parsePagination(query); const salesOrderIds = query.partnerId ? (await this.prisma.salesOrder.findMany({ where: { customerId: query.partnerId }, select: { id: true } })).map((item) => item.id) : undefined; const where: any = { ...(createdAtFilter(query) ? { createdAt: createdAtFilter(query) } : {}), ...(query.status ? { status: query.status } : {}), ...(salesOrderIds ? { sourceSalesOrderId: { in: salesOrderIds } } : {}) }; const [items, total] = await Promise.all([this.prisma.productionOrder.findMany({ where, include: { materials: true, outputLines: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true, customerId: true } } } } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.productionOrder.count({ where })]); return pageResult(items.map(productionOrderText), total, page, pageSize); }
 
   async create(body: CreateProductionBody) {
     const outputLines = body.lines?.length
@@ -76,11 +77,11 @@ export class ProductionService {
         const ratio = item.line.plannedQty / Number(item.bom.standardOutputQty);
         await tx.productionMaterial.createMany({ data: item.bom.items.map((bomItem: any, materialIndex: number) => ({ productionOrderId: order.id, productionOutputLineId: outputLine.id, lineNo: lineIndex * 1000 + materialIndex + 1, materialId: bomItem.inputMaterialId, requiredQty: Number(bomItem.requiredQty) * ratio, unitId: bomItem.unitId, lossRate: bomItem.lossRate })) });
       }
-      return tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true } } } } } });
+      return productionOrderText(await tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true } } } } } }));
     });
   }
 
-  release(id: string) { return this.prisma.productionOrder.update({ where: { id, status: "DRAFT" }, data: { status: "RELEASED" } }); }
+  release(id: string) { return this.prisma.productionOrder.update({ where: { id, status: "DRAFT" }, data: { status: "RELEASED" } }).then(productionOrderText); }
 
   // 供生产单创建表单：按所选销售单合并未完成明细（quantity - shippedQty），作为生产明细初始值。
   async salesOrderRequirements(salesOrderIds: string[]) {
@@ -142,7 +143,9 @@ export class ProductionService {
     if (!key || !lines?.length) throw new BadRequestException("完工入库必须提供幂等键和产出批次");
     const order = await this.prisma.productionOrder.findFirstOrThrow({ where: { id, status: "IN_PROGRESS" }, include: { materials: true, outputLines: true } });
     const totalOutput = lines.reduce((sum, line) => sum + line.quantity, 0);
-    if (totalOutput <= 0 || lines.some((line) => !line.batchNo || !line.productionDate || !line.expiryDate || new Date(line.expiryDate) <= new Date(line.productionDate))) throw new BadRequestException("完工数量、批次和效期无效");
+    // 完工可同时申报报废数量：完工数量入库存、报废数量不入库；也允许纯报废提交（完工 0）用于收尾。
+    const totalScrap = lines.reduce((sum, line) => sum + (line.scrapQty ?? 0), 0);
+    if ((totalOutput <= 0 && totalScrap <= 0) || lines.some((line) => line.quantity < 0 || (line.scrapQty ?? 0) < 0 || (line.quantity > 0 && (!line.batchNo || !line.productionDate || !line.expiryDate || new Date(line.expiryDate) <= new Date(line.productionDate))))) throw new BadRequestException("完工数量、批次和效期无效");
     return this.prisma.$transaction(async (tx) => {
       const materialTransactions = await tx.inventoryTransaction.findMany({ where: { sourceDocumentType: "PRODUCTION_ORDER", sourceDocumentId: order.id, transactionType: { in: ["PRODUCTION_ISSUE", "PRODUCTION_RETURN"] } } });
       const materialCost = -materialTransactions.reduce((sum, item) => sum + Number(item.amountDeltaCny), 0);
@@ -151,11 +154,14 @@ export class ProductionService {
       const outputBatches: { id: string; share: number }[] = [];
       for (const [index, line] of lines.entries()) {
         const output = order.outputLines.find((item) => item.id === line.outputLineId);
-        if (!output || Number(output.completedQty) + line.quantity > Number(output.plannedQty) + 0.000001) throw new BadRequestException("完工数量超过计划数量");
-        const batch = await tx.inventoryBatch.create({ data: { companyId: order.companyId, materialId: output.materialId, batchNo: line.batchNo, supplierBatchNo: order.documentNo, productionDate: new Date(line.productionDate), expiryDate: new Date(line.expiryDate), sourceDocumentType: "PRODUCTION_ORDER", sourceDocumentId: order.id, supplierName: "自产", unitCostCny: outputUnitCost } });
-        await this.posting.post(tx, { idempotencyKey: `${key}:${index}`, companyId: order.companyId, warehouseId: order.warehouseId, locationId: order.targetLocationId, materialId: output.materialId, batchId: batch.id, unitId: output.unitId, quantityDelta: line.quantity, unitCostCny: outputUnitCost, transactionType: InventoryTransactionType.PRODUCTION_RECEIPT, sourceDocumentType: "PRODUCTION_ORDER", sourceDocumentId: order.id, actorUserId });
+        if (!output) throw new BadRequestException("产出明细行不存在");
+        if (Number(output.completedQty) + line.quantity + (line.scrapQty ?? 0) > Number(output.plannedQty) + 0.000001) throw new BadRequestException("完工数量与报废数量之和超过计划数量");
+        if (line.quantity > 0) {
+          const batch = await tx.inventoryBatch.create({ data: { companyId: order.companyId, materialId: output.materialId, batchNo: line.batchNo, supplierBatchNo: order.documentNo, productionDate: new Date(line.productionDate), expiryDate: new Date(line.expiryDate), sourceDocumentType: "PRODUCTION_ORDER", sourceDocumentId: order.id, supplierName: "自产", unitCostCny: outputUnitCost } });
+          await this.posting.post(tx, { idempotencyKey: `${key}:${index}`, companyId: order.companyId, warehouseId: order.warehouseId, locationId: order.targetLocationId, materialId: output.materialId, batchId: batch.id, unitId: output.unitId, quantityDelta: line.quantity, unitCostCny: outputUnitCost, transactionType: InventoryTransactionType.PRODUCTION_RECEIPT, sourceDocumentType: "PRODUCTION_ORDER", sourceDocumentId: order.id, actorUserId });
+          outputBatches.push({ id: batch.id, share: line.quantity / totalOutput });
+        }
         await tx.productionOutputLine.update({ where: { id: output.id }, data: { completedQty: { increment: line.quantity }, scrapQty: { increment: line.scrapQty ?? 0 } } });
-        outputBatches.push({ id: batch.id, share: line.quantity / totalOutput });
       }
       const consumption = new Map<string, { materialId: string; quantity: number }>();
       for (const item of materialTransactions) {
@@ -165,7 +171,8 @@ export class ProductionService {
       }
       for (const outputBatch of outputBatches) for (const [inputBatchId, consumed] of consumption) if (consumed.quantity > 0) await tx.batchGenealogy.upsert({ where: { productionOrderId_outputBatchId_inputBatchId_inputMaterialId: { productionOrderId: order.id, outputBatchId: outputBatch.id, inputBatchId, inputMaterialId: consumed.materialId } }, update: { consumedQty: consumed.quantity * outputBatch.share }, create: { companyId: order.companyId, productionOrderId: order.id, outputBatchId: outputBatch.id, inputBatchId, inputMaterialId: consumed.materialId, consumedQty: consumed.quantity * outputBatch.share } });
       const refreshed = await tx.productionOutputLine.findMany({ where: { productionOrderId: order.id } });
-      const isComplete = refreshed.every((item) => Number(item.completedQty) >= Number(item.plannedQty));
+      // 完成判定：累计完工 + 累计报废 = 计划数量即完成（报废不入库，实际完成数 = 完工数量）。
+      const isComplete = refreshed.every((item) => Number(item.completedQty) + Number(item.scrapQty) >= Number(item.plannedQty) - 0.000001);
       const completedQty = refreshed.reduce((sum, item) => sum + Number(item.completedQty), 0);
       const scrapQty = refreshed.reduce((sum, item) => sum + Number(item.scrapQty), 0);
       await tx.productionOrder.update({ where: { id: order.id }, data: { completedQty, scrapQty, status: isComplete ? "COMPLETED" : "IN_PROGRESS" } });
@@ -175,11 +182,11 @@ export class ProductionService {
         const linkedIds = links.length ? links.map((link) => link.salesOrderId) : order.sourceSalesOrderId ? [order.sourceSalesOrderId] : [];
         for (const salesOrderId of linkedIds) await tx.salesOrder.updateMany({ where: { id: salesOrderId, status: { in: ["IN_PRODUCTION", "CONFIRMED"] } }, data: { status: "READY" } });
       }
-      return tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true } } } } } });
+      return productionOrderText(await tx.productionOrder.findUniqueOrThrow({ where: { id: order.id }, include: { outputLines: true, materials: true, salesOrderLinks: { include: { salesOrder: { select: { id: true, documentNo: true } } } } } }));
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  close(id: string) { return this.prisma.productionOrder.update({ where: { id, status: "COMPLETED" }, data: { status: "CLOSED" } }); }
+  close(id: string) { return this.prisma.productionOrder.update({ where: { id, status: "COMPLETED" }, data: { status: "CLOSED" } }).then(productionOrderText); }
 
   async update(id: string, body: { plannedQty?: number; plannedDate?: string; remark?: string }) {
     const order = await this.prisma.productionOrder.findFirstOrThrow({ where: { id, status: "DRAFT" }, include: { outputLines: true } });
@@ -194,7 +201,7 @@ export class ProductionService {
         if (order.outputLines[0]) await tx.productionOutputLine.update({ where: { id: order.outputLines[0].id }, data: { plannedQty } });
         await tx.productionMaterial.createMany({ data: bom.items.map((item, index) => ({ productionOrderId: order.id, productionOutputLineId: order.outputLines[0]?.id, lineNo: index + 1, materialId: item.inputMaterialId, requiredQty: Number(item.requiredQty) * ratio, unitId: item.unitId, lossRate: item.lossRate })) });
       }
-      return tx.productionOrder.update({ where: { id: order.id }, data: { plannedQty: body.plannedQty, plannedDate: body.plannedDate ? new Date(body.plannedDate) : undefined, remark: body.remark }, include: { outputLines: true, materials: true } });
+      return productionOrderText(await tx.productionOrder.update({ where: { id: order.id }, data: { plannedQty: body.plannedQty, plannedDate: body.plannedDate ? new Date(body.plannedDate) : undefined, remark: body.remark }, include: { outputLines: true, materials: true } }));
     });
   }
 
