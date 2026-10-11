@@ -9,7 +9,7 @@ import { colors } from "../theme";
 import type { User } from "../types";
 
 export function LoginScreen({ onLogin }: { onLogin: (user: User, token?: string) => void }) {
-  const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
+  const [username, setUsername] = useState(() => localStorage.getItem("erp_mobile_last_username") ?? ""); const [password, setPassword] = useState(() => localStorage.getItem("erp_mobile_last_password") ?? ""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1)); const token = params.get("wecom_token"); const message = params.get("wecom_error");
     if (token || message) history.replaceState({}, document.title, location.pathname);
