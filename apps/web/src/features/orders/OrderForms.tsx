@@ -16,14 +16,18 @@ export function OrderForm({ kind, partners, materials, onSubmit }: { kind: "purc
   const blankLine = () => ({ key: Date.now() + Math.random(), materialId: "", quantity: "1", unitId: "", unitPrice: "0", taxExcludedPrice: "0", taxRate: "0", priceBasis: "TAX_INCLUDED", supplierQuoteId: undefined, supplierTaxRateSnapshot: undefined, batchNo: "", supplierBatchNo: "", productionDate: "", expiryDate: "" });
   const [lines, setLines] = useState<any[]>([blankLine()]);
   const [supplierProducts, setSupplierProducts] = useState<any[]>([]);
+  const [customerGroups, setCustomerGroups] = useState<any[]>([]);
+  const [groupValue, setGroupValue] = useState("");
   const [quoteError, setQuoteError] = useState("");
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
   const partnerLabel = kind === "purchase" ? "供应商" : "客户";
   useEffect(() => { if (kind !== "purchase" || !form.partnerId) { setSupplierProducts([]); return; } void request<any[]>(`/suppliers/${form.partnerId}/products/options?asOf=${form.orderDate}`).then(setSupplierProducts).catch((reason) => setQuoteError(reason instanceof Error ? reason.message : "供应商产品加载失败")); }, [kind, form.partnerId, form.orderDate]);
+  useEffect(() => { if (kind !== "sales" || !form.partnerId) { setCustomerGroups([]); setGroupValue(""); return; } void request<any[]>(`/customers/${form.partnerId}/product-groups`).then((groups) => setCustomerGroups(groups.filter((group: any) => group.isActive !== false))).catch((reason) => setQuoteError(reason instanceof Error ? reason.message : "客户产品组加载失败")); }, [kind, form.partnerId]);
   const availableMaterials = materials;
   const materialOptions = availableMaterials.filter((item: any) => item.isActive && !(item.parentMaterialId === null && item.variantEnabled)).map((item: any) => [item.id, `${item.name}`]);
   const updateLine = (index: number, patch: any) => setLines(lines.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line));
   const addLine = () => setLines([...lines, blankLine()]);
+  const applyProductGroup = (groupId: string) => { setGroupValue(groupId); const group = customerGroups.find((item) => item.id === groupId); if (!group) return; const mapped = (group.lines ?? []).filter((line: any) => line.materialId).map((line: any) => ({ key: Date.now() + Math.random(), materialId: line.materialId, quantity: String(line.quantity ?? 1), unitId: line.unitId ?? "", unitPrice: String(line.taxIncludedPrice ?? 0), taxExcludedPrice: String(Number(line.taxIncludedPrice ?? 0)), taxRate: "0", priceBasis: "TAX_INCLUDED", supplierQuoteId: undefined, supplierTaxRateSnapshot: undefined, batchNo: "", supplierBatchNo: "", productionDate: "", expiryDate: "" })); if (mapped.length) setLines(mapped); };
   const pickProduct = (materialId: string) => supplierProducts.find((item) => item.materialId === materialId);
   const defaultTaxRateOf = (materialId: string) => { const material = availableMaterials.find((item: any) => item.id === materialId); if (!material?.defaultTaxRateId) return 0; const tr = reference.taxRates.find((item: any) => item.id === material.defaultTaxRateId); return tr ? Number(tr.rate) / 100 : 0; };
   const fetchPartnerOptions = async (keyword: string) => { const path = kind === "purchase" ? "/suppliers/options" : "/customers/options"; const items = await request<any[]>(`${path}?take=10${keyword ? `&q=${encodeURIComponent(keyword)}` : ""}`); return items.filter((item) => item.isActive).map((item) => [item.id, `${item.name}`]); };
@@ -33,6 +37,7 @@ export function OrderForm({ kind, partners, materials, onSubmit }: { kind: "purc
   return <Form onSubmit={submit} validate={validate}>
     <RemoteSelectField label={partnerLabel} name="partnerId" required value={form.partnerId} onChange={(v) => { const partner = partners.find((item) => item.id === v); setForm({ ...form, partnerId: v, currencyCode: partner?.currencyCode ?? form.currencyCode }); }} fetchOptions={fetchPartnerOptions} initialOptions={partners.filter((item) => item.isActive).map((item) => [item.id, `${item.name}`])} />
     {quoteError && <div className="error banner">{quoteError}</div>}
+    {kind === "sales" && customerGroups.length > 0 && <><SelectField label="选择客户产品组（快速填入物料明细与单价）" value={groupValue} options={customerGroups.map((group: any) => [group.id, `${group.name}`])} onChange={applyProductGroup} placeholder="请选择产品组" /><span className="muted">选择产品组后将替换当前物料明细，并按产品组单价填入，可再逐行调整数量和单价</span></>}
     <Field label="下单日期" value={form.orderDate} onChange={(v) => setForm({ ...form, orderDate: v })} type="date" />
     <SelectField label="币种" value={form.currencyCode} options={[["CNY", "人民币 CNY"], ["USD", "美元 USD"]]} onChange={(v) => setForm({ ...form, currencyCode: v, exchangeRate: v === "CNY" ? "1" : form.exchangeRate })} />
     {form.currencyCode === "USD" && <><Field label="USD/CNY 汇率" value={form.exchangeRate} onChange={(v) => setForm({ ...form, exchangeRate: v })} /><Field label="汇率日期" value={form.exchangeRateDate} onChange={(v) => setForm({ ...form, exchangeRateDate: v })} type="date" /></>}

@@ -5,4 +5,5 @@ export * from "./OrderPages";
 export * from "./StatusPages";
 export * from "./SupportPages";
 export * from "./SupplierDetailPage";
+export * from "./CustomerDetailPage";
 export * from "./BillDetailPage";

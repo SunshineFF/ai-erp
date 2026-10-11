@@ -43,6 +43,8 @@ export class MaterialsService {
     const where: any = {
       parentMaterialId: null,
       ...(query.q ? { OR: [{ code: { contains: query.q, mode: "insensitive" } }, { name: { contains: query.q, mode: "insensitive" } }] } : {}),
+      ...(query.type ? { materialType: query.type } : {}),
+      ...(query.categoryId ? { categoryId: query.categoryId } : {}),
     };
     const [items, total] = await Promise.all([this.prisma.material.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip, take }), this.prisma.material.count({ where })]);
     return pageResult(items.map(materialText), total, page, pageSize);

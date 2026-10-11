@@ -1,11 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Warehouse } from "lucide-react";
 import type { Material } from "../../types";
 import { Actions, DataTable, InventoryReceiptForm, materialLabel, Modal, PanelHeader, request } from "../../shared/BusinessUi";
 
-const transactionTypeLabels: Record<string, string> = { PURCHASE_RECEIPT: "采购收货", PURCHASE_RETURN: "采购退货", PRODUCTION_ISSUE: "生产领料", PRODUCTION_RETURN: "生产退料", PRODUCTION_RECEIPT: "生产完工入库", SALES_SHIPMENT: "销售出库", SALES_RETURN: "销售退货", TRANSFER_OUT: "调拨出库", TRANSFER_IN: "调拨入库", ADJUSTMENT_GAIN: "调整增加", ADJUSTMENT_LOSS: "调整减少", SCRAP: "报废", STOCKTAKE_GAIN: "盘盈", STOCKTAKE_LOSS: "盘亏", REVERSAL: "冲销" };
+export const transactionTypeLabels: Record<string, string> = { PURCHASE_RECEIPT: "采购收货", PURCHASE_RETURN: "采购退货", PRODUCTION_ISSUE: "生产领料", PRODUCTION_RETURN: "生产退料", PRODUCTION_RECEIPT: "生产完工入库", SALES_SHIPMENT: "销售出库", SALES_RETURN: "销售退货", TRANSFER_OUT: "调拨出库", TRANSFER_IN: "调拨入库", ADJUSTMENT_GAIN: "调整增加", ADJUSTMENT_LOSS: "调整减少", SCRAP: "报废", STOCKTAKE_GAIN: "盘盈", STOCKTAKE_LOSS: "盘亏", REVERSAL: "冲销" };
 const number = (value: unknown) => Number(value ?? 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const refLabel = (item: any) => (item ? `${item.name}` : "-");
+
+export function InventorySummaryTable({ materials }: { materials: Material[] }) {
+  const [rows, setRows] = useState<any[]>([]);
+  useEffect(() => { const load = async () => { try { const data = await request<any[]>("/inventory/balances/summary"); setRows(data); } catch { /* 静默失败 */ } }; void load(); }, []);
+  const table = rows.map((row) => [materialLabel(materials, row.materialId), number(row.onHandQty), number(row.availableQty)]);
+  return <DataTable columns={["物料", "合计在库数量", "合计剩余数量(可用)"]} rows={table} />;
+}
 
 export function InventoryBalancesTable({ data, materials }: { data: any[]; materials: Material[] }) {
   return <DataTable columns={["物料", "批次", "库位", "在库数量", "预留数量", "可用数量", "单位", "更新时间"]} rows={data.map((b) => [materialLabel(materials, b.materialId), b.batch?.batchNo ?? "-", refLabel(b.location), number(b.onHandQty), number(b.reservedQty), number(b.availableQty), refLabel(b.unit), new Date(b.updatedAt).toLocaleString()])} />;

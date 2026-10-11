@@ -11,6 +11,7 @@ type ProductBody = { materialId: string; isActive?: boolean; remark?: string };
 type QuoteBody = { currencyCode?: string; unitId: string; taxIncludedPrice: number; cashPrice?: number; supplierTaxRate: number; effectiveFrom: string; effectiveTo?: string; transportMode?: string; deliveryTerms?: string; freightNote?: string; isActive?: boolean };
 type ContactBody = { name: string; title?: string; mobile?: string; landline?: string; email?: string; isPrimary?: boolean; isActive?: boolean };
 type AddressBody = { province?: string; city?: string; district?: string; detail: string; shippingPlace?: string; isDefault?: boolean; isActive?: boolean };
+type ProductGroupBody = { code?: string; name: string; isActive?: boolean; remark?: string; lines?: { materialId: string; quantity?: number; unitId: string; taxIncludedPrice: number; sortOrder?: number; remark?: string }[] };
 
 @Injectable()
 export class PartnersService {
@@ -69,6 +70,7 @@ export class PartnersService {
   async createCustomer(body: PartnerBody) { return this.createPartner("customer", body); }
   async updateSupplier(id: string, body: Partial<PartnerBody>) { const { code, partnerCategoryId, ...data } = body; if (data.materialCategoryId !== undefined) { if (!data.materialCategoryId?.trim()) throw new BadRequestException("请选择物料分类"); const company = await this.prisma.company.findFirstOrThrow(); ensureFound(await (this.prisma as any).materialCategory.findFirst({ where: { id: data.materialCategoryId, companyId: company.id } }), "物料分类不存在"); } await this.prisma.supplier.update({ where: { id }, data: { name: data.name, materialCategoryId: data.materialCategoryId, contactName: data.contactName, phone: data.phone, address: data.address, currencyCode: data.currencyCode } }); return this.supplier(id); }
   updateCustomer(id: string, body: Partial<PartnerBody>) { const { code, ...data } = body; return this.prisma.customer.update({ where: { id }, data: { name: data.name, partnerCategoryId: data.partnerCategoryId, contactName: data.contactName, phone: data.phone, address: data.address, currencyCode: data.currencyCode } }); }
+  async customer(id: string) { return ensureFound(await this.prisma.customer.findUnique({ where: { id }, include: { partnerCategory: true } }), "客户不存在"); }
   async supplier(id: string) { return (this.prisma as any).supplier.findUniqueOrThrow({ where: { id }, include: { materialCategory: true, contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] }, addresses: { orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] } } }); }
   private async ensureSupplierProduct(supplierId: string, productId: string) { return ensureFound(await (this.prisma as any).supplierProduct.findFirst({ where: { id: productId, supplierId }, include: { material: true } }), "供应商产品不存在"); }
   private async ensureTradeable(materialId: string) { const material: any = ensureFound(await (this.prisma as any).material.findUnique({ where: { id: materialId } }), "物料不存在"); if ((!material.parentMaterialId && material.variantEnabled) || material.materialType === "SERVICE") throw new BadRequestException("供应商产品必须选择普通可交易物料或具体 SKU"); return material; }
@@ -94,6 +96,35 @@ export class PartnersService {
   async removeSupplierAddress(supplierId: string, id: string) { ensureFound(await (this.prisma as any).supplierAddress.findFirst({ where: { id, supplierId } }), "供应商发货地址不存在"); await (this.prisma as any).supplierAddress.delete({ where: { id } }); return deleted(id); }
   async removeSupplier(id: string) { const item = ensureFound(await this.prisma.supplier.findUnique({ where: { id } }), "供应商不存在"); const [orders, bills] = await Promise.all([this.prisma.purchaseOrder.count({ where: { supplierId: id } }), this.prisma.bill.count({ where: { supplierId: id } })]); if (orders || bills) deleteConflict(`供应商“${item.code} · ${item.name}”存在历史引用，无法删除`, [{ resource: "采购订单", count: orders }, { resource: "账单", count: bills }].filter((x) => x.count)); await this.prisma.supplier.delete({ where: { id } }); return deleted(id); }
   async removeCustomer(id: string) { const item = ensureFound(await this.prisma.customer.findUnique({ where: { id } }), "客户不存在"); const [orders, bills, shipments] = await Promise.all([this.prisma.salesOrder.count({ where: { customerId: id } }), this.prisma.bill.count({ where: { customerId: id } }), this.prisma.salesShipment.count({ where: { customerId: id } })]); if (orders || bills || shipments) deleteConflict(`客户“${item.code} · ${item.name}”存在历史引用，无法删除`, [{ resource: "销售订单", count: orders }, { resource: "账单", count: bills }, { resource: "出库单", count: shipments }].filter((x) => x.count)); await this.prisma.customer.delete({ where: { id } }); return deleted(id); }
+
+  private groupInclude() {
+    return {
+      lines: {
+        include: {
+          material: {
+            include: {
+              variantValues: {
+                include: {
+                  attributeValue: {
+                    include: { attribute: true },
+                  },
+                },
+              },
+            },
+          },
+          unit: true,
+        },
+        orderBy: { sortOrder: "asc" },
+      },
+    };
+  }
+  private async ensureProductGroup(customerId: string, groupId: string) { await this.prisma.customer.findUniqueOrThrow({ where: { id: customerId } }); return ensureFound(await (this.prisma as any).customerProductGroup.findFirst({ where: { id: groupId, customerId }, include: this.groupInclude() }), "客户产品组不存在"); }
+  private async ensureGroupLineMaterial(materialId: string) { const material: any = ensureFound(await (this.prisma as any).material.findUnique({ where: { id: materialId } }), "物料不存在"); if ((!material.parentMaterialId && material.variantEnabled) || material.materialType === "SERVICE") throw new BadRequestException("产品组明细必须选择普通可交易物料或具体 SKU"); return material; }
+  private groupLineData(body: { materialId: string; quantity?: number; unitId: string; taxIncludedPrice: number; sortOrder?: number; remark?: string }) { if (body.taxIncludedPrice < 0) throw new BadRequestException("报价不能为负数"); const qty = body.quantity === undefined ? 1 : body.quantity; if (qty <= 0) throw new BadRequestException("默认数量必须大于 0"); return { materialId: body.materialId, quantity: qty, unitId: body.unitId, taxIncludedPrice: body.taxIncludedPrice, sortOrder: body.sortOrder ?? 0, remark: body.remark }; }
+  async productGroups(customerId: string) { await this.prisma.customer.findUniqueOrThrow({ where: { id: customerId } }); return (this.prisma as any).customerProductGroup.findMany({ where: { customerId }, include: this.groupInclude(), orderBy: [{ createdAt: "desc" }, { id: "desc" }] }); }
+  async createProductGroup(customerId: string, body: ProductGroupBody) { await this.prisma.customer.findUniqueOrThrow({ where: { id: customerId } }); const company = await this.prisma.company.findFirstOrThrow(); const lines = (body.lines ?? []).map((l) => this.groupLineData(l)); for (const l of lines) await this.ensureGroupLineMaterial(l.materialId); const code = body.code?.trim() || `PG-${Date.now()}`; return (this.prisma as any).customerProductGroup.create({ data: { companyId: company.id, customerId, code, name: body.name, isActive: body.isActive ?? true, remark: body.remark, lines: { create: lines } }, include: this.groupInclude() }); }
+  async updateProductGroup(customerId: string, groupId: string, body: Partial<ProductGroupBody>) { await this.ensureProductGroup(customerId, groupId); const data: any = {}; if (body.name !== undefined) data.name = body.name; if (body.isActive !== undefined) data.isActive = body.isActive; if (body.remark !== undefined) data.remark = body.remark; if (body.lines) { const lines = body.lines.map((l) => this.groupLineData(l)); for (const l of lines) await this.ensureGroupLineMaterial(l.materialId); data.lines = { deleteMany: {}, create: lines }; } await (this.prisma as any).customerProductGroup.update({ where: { id: groupId }, data }); return this.ensureProductGroup(customerId, groupId); }
+  async removeProductGroup(customerId: string, groupId: string) { const group: any = await this.ensureProductGroup(customerId, groupId); await (this.prisma as any).customerProductGroup.delete({ where: { id: groupId } }); return deleted(groupId); }
 }
 
 @Controller("suppliers")
@@ -134,6 +165,11 @@ export class CustomersController {
   @Get() customers(@Query() query: PaginationQuery) { return this.service.customers(query); }
   @Get("options") options(@Query("q") q?: string, @Query("take") take?: string) { return this.service.customerOptions(q, take); }
   @Get("next-code") @Permissions("customer.view") async nextCode(@Query("categoryId") categoryId: string) { return { code: await this.service.nextCode("customer", categoryId) }; }
+  @Get(":id") detail(@Param("id") id: string) { return this.service.customer(id); }
+  @Get(":id/product-groups") productGroups(@Param("id") id: string) { return this.service.productGroups(id); }
+  @Post(":id/product-groups") @Permissions("customer.manage") createProductGroup(@Param("id") id: string, @Body() body: ProductGroupBody) { return this.service.createProductGroup(id, body); }
+  @Patch(":id/product-groups/:groupId") @Permissions("customer.manage") updateProductGroup(@Param("id") id: string, @Param("groupId") groupId: string, @Body() body: Partial<ProductGroupBody>) { return this.service.updateProductGroup(id, groupId, body); }
+  @Delete(":id/product-groups/:groupId") @Permissions("customer.manage") removeProductGroup(@Param("id") id: string, @Param("groupId") groupId: string) { return this.service.removeProductGroup(id, groupId); }
   @Post() @Permissions("customer.manage") create(@Body() body: PartnerBody) { return this.service.createCustomer(body); }
   @Patch(":id") @Permissions("customer.manage") update(@Param("id") id: string, @Body() body: Partial<PartnerBody>) { return this.service.updateCustomer(id, body); }
   @Delete(":id") @Permissions("customer.manage") remove(@Param("id") id: string) { return this.service.removeCustomer(id); }

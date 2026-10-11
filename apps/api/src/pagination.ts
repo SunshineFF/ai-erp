@@ -1,6 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 
-export type PaginationQuery = { page?: string; pageSize?: string; q?: string; createdFrom?: string; createdTo?: string; status?: string; partnerId?: string };
+export type PaginationQuery = { page?: string; pageSize?: string; q?: string; createdFrom?: string; createdTo?: string; status?: string; partnerId?: string; type?: string; categoryId?: string };
 export type PageResult<T> = { items: T[]; total: number; page: number; pageSize: number; totalPages: number };
 
 export function parsePagination(query: PaginationQuery = {}) {
