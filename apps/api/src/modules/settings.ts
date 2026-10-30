@@ -19,6 +19,11 @@ function validateProductCode(code: string, label: string) {
   return code.trim().toUpperCase();
 }
 
+function validateProductValueCode(code: string, label: string) {
+  if (!code?.trim() || !/^[\u3400-\u9FFF\uF900-\uFAFFA-Za-z0-9_-]+$/.test(code.trim())) throw new BadRequestException(`${label}编码只支持中文、字母、数字、下划线和短横线`);
+  return code.trim().toUpperCase();
+}
+
 @Injectable()
 export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -61,7 +66,7 @@ export class SettingsService {
   }
   async createProductAttributeValue(attributeId: string, body: ProductAttributeValueBody) {
     ensureFound(await this.db().productAttribute.findUnique({ where: { id: attributeId } }), "产品属性不存在");
-    return this.db().productAttributeValue.create({ data: { attributeId, code: validateProductCode(body.code, "属性值"), name: body.name.trim(), sortOrder: body.sortOrder ?? 0, isActive: body.isActive ?? true } });
+    return this.db().productAttributeValue.create({ data: { attributeId, code: validateProductValueCode(body.code, "属性值"), name: body.name.trim(), sortOrder: body.sortOrder ?? 0, isActive: body.isActive ?? true } });
   }
   async updateProductAttributeValue(id: string, body: Partial<ProductAttributeValueBody>) {
     return this.db().productAttributeValue.update({ where: { id }, data: { name: body.name?.trim(), sortOrder: body.sortOrder, isActive: body.isActive } });

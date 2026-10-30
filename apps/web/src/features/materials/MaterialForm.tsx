@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { removeMaterialImage, request } from "../../api";
 import { Field, Form, SelectField } from "../../shared/CrudUi";
 import { ImageUpload } from "../../shared/ImageUpload";
@@ -11,7 +12,7 @@ type Combination = { key: string; values: Array<{ id: string; code: string; name
 function buildCombinations(attributes: AttributeOption[], selections: Selection[]): Combination[] {
   const sets = selections.map((selection) => { const attribute = attributes.find((item) => item.id === selection.attributeId); return (selection.valueIds ?? []).map((id) => { const value = attribute?.values.find((item) => item.id === id); return value && attribute ? { id: value.id, code: value.code, name: value.name, attributeName: attribute.name } : null; }).filter(Boolean) as Combination["values"]; });
   if (!sets.length || sets.some((set) => !set.length)) return [];
-  return sets.reduce<Combination[]>((result, set) => result.flatMap((prefix) => set.map((value) => { const values = [...prefix.values, value]; return { key: values.map((item) => item.id).join("/"), values, file: prefix.file }; })), [{ key: "", values: [] }]).slice(1);
+  return sets.reduce<Combination[]>((result, set) => result.flatMap((prefix) => set.map((value) => { const values = [...prefix.values, value]; return { key: values.map((item) => item.id).join("/"), values, file: prefix.file }; })), [{ key: "", values: [] }]);
 }
 
 export function MaterialForm({ initial, onSubmit }: { initial: any; onSubmit: (value: any) => Promise<void> }) {
@@ -23,7 +24,219 @@ export function MaterialForm({ initial, onSubmit }: { initial: any; onSubmit: (v
   useEffect(() => { if (isEditing || !form.categoryId) { setGeneratedCode(""); return; } let cancelled = false; setCodeLoading(true); void request<{ code: string }>(`/materials/next-code?categoryId=${encodeURIComponent(form.categoryId)}`).then((value) => { if (!cancelled) setGeneratedCode(value.code); }).catch(() => { if (!cancelled) setGeneratedCode(""); }).finally(() => { if (!cancelled) setCodeLoading(false); }); return () => { cancelled = true; }; }, [form.categoryId, isEditing]);
   const selectedAttributes = attributes.filter((attribute) => selections.some((selection) => selection.attributeId === attribute.id)); const rows = useMemo(() => buildCombinations(selectedAttributes, selections).filter((item) => !excludedKeys.includes(item.key)).map((item) => ({ ...item, file: files[item.key] ?? null })), [selectedAttributes, selections, files, excludedKeys]); const code = isEditing ? form.code : generatedCode;
   const existingVariant = (row: Combination) => initial.variants?.find((variant: any) => variant.variantValues?.length === row.values.length && variant.variantValues.every((item: any) => row.values.some((value) => value.id === item.attributeValueId)));
-  const updateSelection = (index: number, patch: Partial<Selection>) => setSelections((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); const addAttribute = () => { const next = attributes.find((attribute) => !selections.some((item) => item.attributeId === attribute.id)); if (next) setSelections((current) => [...current, { attributeId: next.id, valueIds: [] }]); }; const removeAttribute = (index: number) => setSelections((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  const updateSelection = (index: number, patch: Partial<Selection>) => setSelections((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); const addAttribute = () => { const next = attributes.find((attribute) => !selections.some((item) => item.attributeId === attribute.id)); if (next) setSelections((current) => [...current, { attributeId: next.id, valueIds: [] }]); }; const removeAttribute = (index: number) => setSelections((current) => current.filter((_, itemIndex) => itemIndex !== index)); const toggleValue = (index: number, valueId: string) => setSelections((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, valueIds: item.valueIds.includes(valueId) ? item.valueIds.filter((id) => id !== valueId) : [...item.valueIds, valueId] } : item));
   const submit = () => onSubmit({ ...form, code, variantEnabled: Boolean(form.variantEnabled), attributes: form.variantEnabled ? selections : [], variantImages: rows.map((row) => ({ valueIds: row.values.map((value) => value.id), file: row.file })), removedVariantIds });
-  return <Form onSubmit={submit}><Field label={isEditing ? "编码" : "编码（自动生成）"} value={code || (codeLoading ? "生成中..." : "选择分类后自动生成")} onChange={(value) => setForm({ ...form, code: value })} readOnly /><Field label="名称" value={form.name} onChange={(value) => setForm({ ...form, name: value })} /><SelectField label="类型" value={form.materialType} options={[["RAW_MATERIAL", "原材料"], ["AUXILIARY", "辅料"], ["SEMI_FINISHED", "半成品"], ["FINISHED_GOOD", "成品"], ["GOODS", "商品"], ["SERVICE", "服务/费用"]]} onChange={(value) => setForm({ ...form, materialType: value })} /><SelectField label="物料分类" value={form.categoryId} options={reference.categories.map((item: any) => [item.id, `${item.name}`])} onChange={(value) => setForm({ ...form, categoryId: value })} /><SelectField label="基础单位" value={form.baseUnitId} options={reference.units.map((item: any) => [item.id, `${item.name}`])} onChange={(value) => setForm({ ...form, baseUnitId: value })} /><SelectField label="默认税率" value={form.defaultTaxRateId} options={reference.taxRates.map((item: any) => [item.id, item.name])} onChange={(value) => setForm({ ...form, defaultTaxRateId: value })} /><Field label="有效期天数（可空）" value={String(form.shelfLifeDays)} onChange={(value) => setForm({ ...form, shelfLifeDays: value })} /><Field label="临期提醒天数" value={String(form.expiryWarningDays)} onChange={(value) => setForm({ ...form, expiryWarningDays: value })} /><label className="checkbox-row"><input type="checkbox" checked={form.variantEnabled} disabled={isEditing && Boolean(initial.variants?.length)} onChange={(event) => setForm({ ...form, variantEnabled: event.target.checked })} />启用多属性 SKU</label>{form.variantEnabled && <div className="variant-editor"><div className="line-editor-header"><span>产品属性</span><button className="primary small" type="button" disabled={selections.length >= attributes.length} onClick={addAttribute}>添加属性</button></div>{attributeError && <div className="error banner">{attributeError}</div>}{selections.map((selection, index) => { const attribute = attributes.find((item) => item.id === selection.attributeId); return <div className="variant-attribute-row" key={`${selection.attributeId}-${index}`}><SelectField label="属性" value={selection.attributeId} options={attributes.filter((item) => item.id === selection.attributeId || !selections.some((other) => other.attributeId === item.id)).map((item) => [item.id, `${item.name}`])} onChange={(value) => updateSelection(index, { attributeId: value, valueIds: [] })} /><label>属性值<select multiple value={selection.valueIds} onChange={(event) => updateSelection(index, { valueIds: Array.from(event.target.selectedOptions, (option) => option.value) })}>{(attribute?.values ?? []).map((value) => <option key={value.id} value={value.id}>{value.name}</option>)}</select></label><button className="link-button danger" type="button" onClick={() => removeAttribute(index)}>移除</button></div>; })}<div className="variant-table">{rows.map((row) => { const variant = existingVariant(row); return <div className="variant-row" key={row.key}><div><strong>{variant?.code ?? `${code || "主编码"}-${row.values.map((value) => value.code).join("-")}`}</strong><small>{row.values.map((value) => `${value.attributeName}=${value.name}`).join(" · ")}</small></div><ImageUpload value={variant?.imageUrl} file={row.file} onChange={(file) => setFiles((current) => ({ ...current, [row.key]: file }))} onRemove={variant ? () => removeMaterialImage(variant.id).then(() => undefined) : undefined} /><button className="link-button danger" type="button" onClick={() => { if (variant) setRemovedVariantIds((current) => [...current, variant.id]); else setExcludedKeys((current) => [...current, row.key]); }}>移除 SKU</button></div>; })}{!rows.length && <p className="muted">请选择属性并至少选择一个属性值</p>}</div></div>}<label className="image-field">产品族封面（可空）<ImageUpload value={initial.imageUrl} file={form.image} onChange={(file) => setForm({ ...form, image: file })} onRemove={initial.id ? () => removeMaterialImage(initial.id).then(() => undefined) : undefined} /></label></Form>;
+  return (
+    <Form onSubmit={submit}>
+      <Field
+        label={isEditing ? "编码" : "编码（自动生成）"}
+        value={code || (codeLoading ? "生成中..." : "选择分类后自动生成")}
+        onChange={(value) => setForm({ ...form, code: value })}
+        readOnly
+      />
+      <Field
+        label="名称"
+        value={form.name}
+        onChange={(value) => setForm({ ...form, name: value })}
+      />
+      <SelectField
+        label="类型"
+        value={form.materialType}
+        options={[
+          ["RAW_MATERIAL", "原材料"],
+          ["AUXILIARY", "辅料"],
+          ["SEMI_FINISHED", "半成品"],
+          ["FINISHED_GOOD", "成品"],
+          ["GOODS", "商品"],
+          ["SERVICE", "服务/费用"],
+        ]}
+        onChange={(value) => setForm({ ...form, materialType: value })}
+      />
+      <SelectField
+        label="物料分类"
+        value={form.categoryId}
+        options={reference.categories.map((item: any) => [
+          item.id,
+          `${item.name}`,
+        ])}
+        onChange={(value) => setForm({ ...form, categoryId: value })}
+      />
+      <SelectField
+        label="基础单位"
+        value={form.baseUnitId}
+        options={reference.units.map((item: any) => [item.id, `${item.name}`])}
+        onChange={(value) => setForm({ ...form, baseUnitId: value })}
+      />
+      <SelectField
+        label="默认税率"
+        value={form.defaultTaxRateId}
+        options={reference.taxRates.map((item: any) => [item.id, item.name])}
+        onChange={(value) => setForm({ ...form, defaultTaxRateId: value })}
+      />
+      <Field
+        label="有效期天数（可空）"
+        value={String(form.shelfLifeDays)}
+        onChange={(value) => setForm({ ...form, shelfLifeDays: value })}
+      />
+      <Field
+        label="临期提醒天数"
+        value={String(form.expiryWarningDays)}
+        onChange={(value) => setForm({ ...form, expiryWarningDays: value })}
+      />
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={form.variantEnabled}
+          disabled={isEditing && Boolean(initial.variants?.length)}
+          onChange={(event) =>
+            setForm({ ...form, variantEnabled: event.target.checked })
+          }
+        />
+        启用多属性 SKU
+      </label>
+      {form.variantEnabled && (
+        <div className="variant-editor">
+          <div className="line-editor-header">
+            <span>产品属性</span>
+            <button
+              className="primary small"
+              type="button"
+              disabled={selections.length >= attributes.length}
+              onClick={addAttribute}
+            >
+              添加属性
+            </button>
+          </div>
+          {attributeError && (
+            <div className="error banner">{attributeError}</div>
+          )}
+          {selections.map((selection, index) => {
+            const attribute = attributes.find(
+              (item) => item.id === selection.attributeId,
+            );
+            return (
+              <div
+                className="variant-attribute-row"
+                key={`${selection.attributeId}-${index}`}
+              >
+                <SelectField
+                  label="属性"
+                  value={selection.attributeId}
+                  options={attributes
+                    .filter(
+                      (item) =>
+                        item.id === selection.attributeId ||
+                        !selections.some(
+                          (other) => other.attributeId === item.id,
+                        ),
+                    )
+                    .map((item) => [item.id, `${item.name}`])}
+                  onChange={(value) =>
+                    updateSelection(index, { attributeId: value, valueIds: [] })
+                  }
+                />
+                <label>
+                  属性值
+                  <div className="attribute-tags">
+                    {(attribute?.values ?? []).map((value) => (
+                      <button
+                        key={value.id}
+                        type="button"
+                        className={
+                          selection.valueIds.includes(value.id)
+                            ? "tag tag-active"
+                            : "tag"
+                        }
+                        onClick={() => toggleValue(index, value.id)}
+                      >
+                        {value.name}
+                      </button>
+                    ))}
+                  </div>
+                  {!selection.valueIds.length && (
+                    <span className="tag-hint muted">
+                      点击标签选择（可多选）
+                    </span>
+                  )}
+                </label>
+                <button
+                  className="link-button danger"
+                  type="button"
+                  onClick={() => removeAttribute(index)}
+                >
+                  移除
+                </button>
+              </div>
+            );
+          })}
+          <div className="variant-table">
+            {rows.map((row) => {
+              const variant = existingVariant(row);
+              return (
+                <div className="variant-row" key={row.key}>
+                  <div>
+                    <strong>
+                      {variant?.code ??
+                        `${code || "主编码"}-${row.values.map((value) => value.code).join("-")}`}
+                    </strong>
+                    <small>
+                      {row.values
+                        .map((value) => `${value.attributeName}=${value.name}`)
+                        .join(" · ")}
+                    </small>
+                  </div>
+                  <ImageUpload
+                    value={variant?.imageUrl}
+                    file={row.file}
+                    onChange={(file) =>
+                      setFiles((current) => ({ ...current, [row.key]: file }))
+                    }
+                    onRemove={
+                      variant
+                        ? () =>
+                            removeMaterialImage(variant.id).then(
+                              () => undefined,
+                            )
+                        : undefined
+                    }
+                  />
+                  <button
+                    className="icon-button danger"
+                    type="button"
+                    title="移除 SKU"
+                    onClick={() => {
+                      if (variant)
+                        setRemovedVariantIds((current) => [
+                          ...current,
+                          variant.id,
+                        ]);
+                      else setExcludedKeys((current) => [...current, row.key]);
+                    }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              );
+            })}
+            {!rows.length && (
+              <p className="muted">请选择属性并至少选择一个属性值</p>
+            )}
+          </div>
+        </div>
+      )}
+      <label className="image-field">
+        产品族封面（可空）
+        <ImageUpload
+          value={initial.imageUrl}
+          file={form.image}
+          onChange={(file) => setForm({ ...form, image: file })}
+          onRemove={
+            initial.id
+              ? () => removeMaterialImage(initial.id).then(() => undefined)
+              : undefined
+          }
+        />
+      </label>
+    </Form>
+  );
 }
