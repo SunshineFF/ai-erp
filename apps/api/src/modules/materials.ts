@@ -100,7 +100,7 @@ export class MaterialsService {
             const sku = await tx.material.create({ data: { companyId: company.id, code: `${parent.code}-${suffix}`, name: `${parent.name} · ${values.map((value: any) => value.name).join(" · ")}`, parentMaterialId: parent.id, categoryId: parent.categoryId, materialType: parent.materialType, baseUnitId: parent.baseUnitId, shelfLifeDays: parent.shelfLifeDays, expiryWarningDays: parent.expiryWarningDays, purchasable: body.purchasable ?? false, saleable: body.saleable ?? false, manufacturable: body.manufacturable ?? false, defaultLocationId: parent.defaultLocationId, defaultTaxRateId: parent.defaultTaxRateId } });
             await tx.materialVariantValue.createMany({ data: values.map((value) => ({ materialId: sku.id, attributeValueId: value.id })) });
           }
-          return materialText(await tx.material.findUniqueOrThrow({ where: { id: parent.id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } } }, attributes: true }));
+          return materialText(await tx.material.findUniqueOrThrow({ where: { id: parent.id }, include: { variants: { include: { variantValues: { include: { attributeValue: { include: { attribute: true } } } } } } } }));
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       } catch (error) {
         if ((error as any)?.code !== "P2002" || attempt === 4) throw error;
